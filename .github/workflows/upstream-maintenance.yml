@@ -1,0 +1,124 @@
+name: Upstream CloudTAK Release Maintenance
+
+on:
+  schedule:
+    # Run weekly on Monday at 02:00 UTC
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Specific upstream release tag to evaluate (e.g. v13.103.0)'
+        required: false
+        type: string
+      target_commit:
+        description: 'Specific upstream commit SHA (optional)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run (do not record state or open pull requests)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintenance-lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout TISCK Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'cloudtak/api/package-lock.json'
+
+      - name: Install Dependencies
+        run: |
+          cd cloudtak/api
+          npm ci
+
+      - name: Configure Git Identity
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Verify Upstream Version Baseline Consistency
+        run: |
+          npx tsx cloudtak/scripts/upstream/version-pin.ts --verify
+
+      - name: Stage A - Discover Upstream Release
+        id: discover
+        run: |
+          DISCOVERY_ARGS=""
+          if [ -n "${{ inputs.target_tag }}" ]; then
+            DISCOVERY_ARGS="$DISCOVERY_ARGS --tag ${{ inputs.target_tag }}"
+          fi
+          if [ -n "${{ inputs.target_commit }}" ]; then
+            DISCOVERY_ARGS="$DISCOVERY_ARGS --commit ${{ inputs.target_commit }}"
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DISCOVERY_ARGS="$DISCOVERY_ARGS --dry-run"
+          fi
+
+          npx tsx cloudtak/scripts/upstream/discover-release.ts $DISCOVERY_ARGS --json > discovery-result.json
+          cat discovery-result.json
+
+          STATUS=$(node -e "console.log(JSON.parse(require('fs').readFileSync('discovery-result.json')).status)")
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+
+          if [ "$STATUS" = "new_release" ]; then
+            CANDIDATE_TAG=$(node -e "console.log(JSON.parse(require('fs').readFileSync('discovery-result.json')).tag)")
+            CANDIDATE_SHA=$(node -e "console.log(JSON.parse(require('fs').readFileSync('discovery-result.json')).commitSha)")
+            echo "candidate_tag=$CANDIDATE_TAG" >> $GITHUB_OUTPUT
+            echo "candidate_sha=$CANDIDATE_SHA" >> $GITHUB_OUTPUT
+            echo "Proceeding with lifecycle for candidate $CANDIDATE_TAG ($CANDIDATE_SHA)"
+          else
+            echo "No new release requires processing (status: $STATUS)."
+          fi
+
+      - name: Stage B - Execute Static Compatibility Assessment
+        if: steps.discover.outputs.status == 'new_release'
+        id: assess
+        run: |
+          npx tsx cloudtak/scripts/upstream/assess-compatibility.ts \
+            --candidate-tag "${{ steps.discover.outputs.candidate_tag }}" \
+            --candidate-sha "${{ steps.discover.outputs.candidate_sha }}" \
+            --output-report COMPATIBILITY-REPORT.md \
+            --json > compatibility-result.json
+          cat COMPATIBILITY-REPORT.md
+
+      - name: Stage C - Execute Sandboxed Candidate Validation
+        if: steps.discover.outputs.status == 'new_release'
+        id: validate
+        run: |
+          npx tsx cloudtak/scripts/upstream/run-candidate-tests.ts \
+            --candidate-tag "${{ steps.discover.outputs.candidate_tag }}" \
+            --candidate-sha "${{ steps.discover.outputs.candidate_sha }}" \
+            --output-json test-results.json
+
+      - name: Stage D - Publish Upgrade Proposal Pull Request or Triage Issue
+        if: steps.discover.outputs.status == 'new_release' && !inputs.dry_run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx tsx cloudtak/scripts/upstream/publish-proposal.ts \
+            --candidate-tag "${{ steps.discover.outputs.candidate_tag }}" \
+            --candidate-sha "${{ steps.discover.outputs.candidate_sha }}" \
+            --compatibility-json compatibility-result.json \
+            --test-results-json test-results.json

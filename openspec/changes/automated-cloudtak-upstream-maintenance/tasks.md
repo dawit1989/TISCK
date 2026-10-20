@@ -9,16 +9,16 @@
 
 ## 2. Milestone 2: Release Discovery & Deduplication
 
-- [ ] 2.1 Implement upstream discovery engine `cloudtak/scripts/upstream/discover-release.ts` that fetches tags and commit SHAs from `https://github.com/dfpc-coe/CloudTAK.git` via git ls-remote or GitHub API, verifying discovery against a mock release feed
-- [ ] 2.2 Add candidate deduplication and manual parameterization (`--tag <tag>`, `--commit <sha>`) to `discover-release.ts`, verifying that already-tracked releases exit with code 0 and an informational log without duplicate branch creation
-- [ ] 2.3 Implement GitHub Actions workflow definition `.github/workflows/upstream-maintenance.yml` supporting recurring cron schedules and `workflow_dispatch` manual triggers, verifying workflow syntax against actionlint or YAML schema validation
+- [x] 2.1 Implement upstream discovery engine `cloudtak/scripts/upstream/discover-release.ts` that fetches tags and commit SHAs from `https://github.com/dfpc-coe/CloudTAK.git` via git ls-remote or GitHub API, verifying discovery against a mock release feed
+- [x] 2.2 Add candidate deduplication and manual parameterization (`--tag <tag>`, `--commit <sha>`) to `discover-release.ts`, verifying that already-tracked releases exit with code 0 and an informational log without duplicate branch creation
+- [x] 2.3 Implement GitHub Actions workflow definition `.github/workflows/upstream-maintenance.yml` supporting recurring cron schedules and `workflow_dispatch` manual triggers, verifying workflow syntax against actionlint or YAML schema validation
 
 ## 3. Milestone 3: Compatibility Report & Customization Collision Detection
 
-- [ ] 3.1 Implement diff analysis engine `cloudtak/scripts/upstream/assess-compatibility.ts` computing tree diffs between `vendor/upstream` and candidate refs, verifying AST/regex detection of authentication and OIDC modifications
-- [ ] 3.2 Add database migration scanner to `assess-compatibility.ts` inspecting `cloudtak/api/migrations/` for DDL statements (flagging DROP TABLE, DROP COLUMN, ALTER COLUMN TYPE as HIGH risk), verifying test fixtures with destructive vs additive migrations
-- [ ] 3.3 Add customization collision detector to `assess-compatibility.ts` matching diff hunks against `tisck-customization-manifest.json`, verifying collision alerts when TISCK patches are modified
-- [ ] 3.4 Implement report formatter in `assess-compatibility.ts` generating `compatibility-report.json` and human-readable `COMPATIBILITY-REPORT.md` with risk indicator scores and confidence classifications, verifying markdown output
+- [x] 3.1 Implement diff analysis engine `cloudtak/scripts/upstream/assess-compatibility.ts` computing tree diffs between `vendor/upstream` and candidate refs, verifying AST/regex detection of authentication and OIDC modifications
+- [x] 3.2 Add database migration scanner to `assess-compatibility.ts` inspecting `cloudtak/api/migrations/` for DDL statements (flagging DROP TABLE, DROP COLUMN, ALTER COLUMN TYPE as HIGH risk), verifying test fixtures with destructive vs additive migrations
+- [x] 3.3 Add customization collision detector to `assess-compatibility.ts` matching diff hunks against `tisck-customization-manifest.json`, verifying collision alerts when TISCK patches are modified
+- [x] 3.4 Implement report formatter in `assess-compatibility.ts` generating `compatibility-report.json` and human-readable `COMPATIBILITY-REPORT.md` with risk indicator scores and confidence classifications, verifying markdown output
 
 ## 4. Milestone 4: Isolated Candidate Test Environment
 
