@@ -1,0 +1,349 @@
+import path from 'node:path';
+import { Type } from '@sinclair/typebox';
+import { StandardResponse, ProfileFileResponse } from '../../common/types.js';
+import { sql, eq } from 'drizzle-orm';
+import Schema from '@openaddresses/batch-schema';
+import Err from '@openaddresses/batch-error';
+import Auth from '../../common/auth.js';
+import S3 from '../../common/aws/s3.js';
+import IconsetControl from '../../common/control/iconset.js';
+import ProfileFileControl from '../../common/control/profile-file.js';
+import { ProfileFile, ProfileFileChannel } from '../../common/schema.js';
+import type ConfigStateless from '../config.js';
+import { userChannels } from '../lib/tak-channels.js';
+import { profileAssetTileJSON } from '../lib/tilejson.js';
+import * as Default from '../lib/limits.js';
+
+export default async function router(schema: Schema, config: ConfigStateless) {
+    const iconsetControl = new IconsetControl(config);
+    const profileFileControl = new ProfileFileControl(config);
+
+    await schema.get('/profile/asset', {
+        name: 'List Files',
+        group: 'ProfileFile',
+        description: 'List Files',
+        query: Type.Object({
+            limit: Type.Integer({
+                default: 100,
+                minimum: 1,
+                maximum: 1000,
+            }),
+            sort: Type.String({
+                default: 'created',
+                enum: Object.keys(ProfileFile),
+            }),
+            filter: Type.String({
+                default: '',
+            }),
+            page: Default.Page,
+            order: Default.Order,
+        }),
+        res: Type.Object({
+            total: Type.Integer(),
+            tiles: Type.Object({
+                url: Type.String(),
+            }),
+            items: Type.Array(ProfileFileResponse),
+        }),
+    }, async (req, res) => {
+        try {
+            const user = await Auth.as_user(config, req);
+            const channels = [...await userChannels(config, user.email)];
+            const where = channels.length
+                ? sql`
+                    name ~* ${req.query.filter}
+                    AND (
+                        username = ${user.email}
+                        OR EXISTS (
+                            SELECT 1
+                            FROM profile_file_channel
+                            WHERE profile_file_channel.file = profile_files.id
+                            AND profile_file_channel.channel IN ${channels}
+                        )
+                    )
+                `
+                : sql`
+                    name ~* ${req.query.filter}
+                    AND username = ${user.email}
+                `;
+
+            const list = await config.models.ProfileFile.augmented_list({
+                limit: req.query.limit,
+                page: req.query.page,
+                order: req.query.order,
+                sort: req.query.sort,
+                where,
+            });
+
+            res.json({
+                tiles: {
+                    url: String(new URL(`${config.PMTILES_URL}/tiles/profile/${user.email}/`)),
+                },
+                ...list,
+            });
+        } catch (err) {
+            Err.respond(err, res);
+        }
+    });
+
+    await schema.delete('/profile/asset/:asset', {
+        name: 'Delete File',
+        group: 'ProfileFile',
+        description: 'Delete Asset',
+        params: Type.Object({
+            asset: Type.String({
+                format: 'uuid',
+            }),
+        }),
+        res: StandardResponse,
+    }, async (req, res) => {
+        try {
+            const user = await Auth.as_user(config, req);
+
+            const file = await config.models.ProfileFile.from(req.params.asset);
+
+            if (file.username !== user.email) {
+                throw new Err(403, null, 'You do not have permission to delete this asset');
+            }
+
+            const files = [file];
+            for (let index = 0; index < files.length; index++) {
+                files.push(...await config.pg.select().from(ProfileFile)
+                    .where(eq(ProfileFile.parent, files[index].id)));
+            }
+
+            await config.models.ProfileFile.delete(req.params.asset);
+
+            if (file.iconset) {
+                const iconset = await config.models.Iconset.from(file.iconset);
+
+                if (await config.models.ProfileFile.count({
+                    where: sql`
+                      iconset = ${file.iconset}
+                    `,
+                }) > 1) {
+                    return;
+                }
+
+                if (iconset.username_internal && iconset.username && iconset.username === user.email) {
+                    await config.models.Icon.delete(sql`iconset = ${file.iconset}`);
+                    await config.models.Iconset.delete(String(file.iconset));
+                }
+            }
+
+            await Promise.all(files.map(child => S3.del(`profile/${child.username}/${child.id}`, {
+                recurse: true,
+            })));
+
+            res.json({
+                status: 200,
+                message: 'Asset Deleted',
+            });
+        } catch (err) {
+            Err.respond(err, res);
+        }
+    });
+
+    await schema.post('/profile/asset', {
+        name: 'Create Asset',
+        group: 'ProfileFile',
+        description: 'Internal API used to create assets after S3 assets have been uploaded by the Events Task',
+        body: Type.Object({
+            id: Type.String({
+                description: 'Random UUID v4 of uploaded asset',
+            }),
+            name: Type.String(),
+            parent: Type.Optional(Type.Union([Type.Null(), Type.String({ format: 'uuid' })])),
+            path: Type.String({
+                default: '/',
+            }),
+            iconset: Type.Optional(Type.Union([Type.Null(), Type.String()])),
+            artifacts: Type.Array(Type.Object({
+                ext: Type.String(),
+            }), {
+                default: [],
+            }),
+        }),
+        res: ProfileFileResponse,
+    }, async (req, res) => {
+        try {
+            const user = await Auth.as_user(config, req, { token: true });
+
+            const head = await S3.head(`profile/${user.email}/${req.body.id}${path.parse(req.body.name).ext.toLowerCase()}`);
+
+            const artifacts = [];
+            for (const artifact of req.body.artifacts) {
+                artifacts.push({
+                    ext: artifact.ext,
+                    size: (await S3.head(`profile/${user.email}/${req.body.id}${artifact.ext}`)).ContentLength || 0,
+                });
+            }
+
+            if (req.body.parent) {
+                await profileFileControl.ensureParentPermission(req.body.parent, user.email, req.body.id);
+            }
+
+            await iconsetControl.ensurePermission(req.body.iconset, user.email);
+
+            const file = await config.models.ProfileFile.generate({
+                id: req.body.id,
+                username: user.email,
+                parent: req.body.parent ?? null,
+                name: req.body.name,
+                path: req.body.path,
+                iconset: req.body.iconset ?? null,
+                size: head.ContentLength || 0,
+                artifacts,
+            });
+
+            res.json(await config.models.ProfileFile.augmented_from(file.id));
+        } catch (err) {
+            Err.respond(err, res);
+        }
+    });
+
+    await schema.patch('/profile/asset/:asset', {
+        name: 'Update Asset',
+        group: 'ProfileFile',
+        description: 'Modify Asset Metadata',
+        params: Type.Object({
+            asset: Type.String({
+                format: 'uuid',
+            }),
+        }),
+        body: Type.Object({
+            path: Type.Optional(Type.String()),
+            parent: Type.Optional(Type.Union([Type.Null(), Type.String({ format: 'uuid' })])),
+            artifacts: Type.Optional(Type.Array(Type.Object({
+                ext: Type.String(),
+            }))),
+            name: Type.Optional(Type.String()),
+            iconset: Type.Optional(Type.Union([Type.Null(), Type.String()])),
+            channels: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }), { uniqueItems: true })),
+        }),
+        res: ProfileFileResponse,
+    }, async (req, res) => {
+        try {
+            const user = await Auth.as_user(config, req, { token: true });
+
+            let file = await config.models.ProfileFile.from(req.params.asset);
+
+            if (file.username !== user.email) {
+                throw new Err(403, null, 'You do not have permission to modify this asset');
+            }
+
+            if (req.body.parent) {
+                await profileFileControl.ensureParentPermission(req.body.parent, user.email, file.id);
+            }
+
+            if (req.body.artifacts) {
+                const artifacts = [];
+                for (const artifact of req.body.artifacts) {
+                    artifacts.push({
+                        ext: artifact.ext,
+                        size: (await S3.head(`profile/${user.email}/${file.id}${artifact.ext}`)).ContentLength ?? 0,
+                    });
+                }
+
+                file = await config.models.ProfileFile.commit(req.params.asset, { artifacts });
+            }
+
+            let iconsetValue = file.iconset;
+            if (req.body.iconset === null) {
+                iconsetValue = null;
+            } else if (req.body.iconset !== undefined) {
+                iconsetValue = req.body.iconset;
+            }
+
+            await iconsetControl.ensurePermission(iconsetValue, user.email);
+
+            file = await config.models.ProfileFile.commit(req.params.asset, {
+                parent: req.body.parent,
+                name: req.body.name,
+                path: req.body.path,
+                iconset: iconsetValue,
+            });
+
+            if (req.body.channels !== undefined) {
+                await config.pg.delete(ProfileFileChannel)
+                    .where(eq(ProfileFileChannel.file, req.params.asset));
+
+                if (req.body.channels.length > 0) {
+                    await config.pg.insert(ProfileFileChannel)
+                        .values(req.body.channels.map(ch => ({
+                            file: req.params.asset,
+                            channel: BigInt(ch),
+                        })));
+                }
+            }
+
+            res.json(await config.models.ProfileFile.augmented_from(file.id));
+        } catch (err) {
+            Err.respond(err, res);
+        }
+    });
+
+    await schema.get('/profile/asset/:asset.:ext', {
+        name: 'Raw Asset',
+        group: 'ProfileFile',
+        description: 'Get single raw asset',
+        query: Type.Object({
+            token: Type.Optional(Type.String()),
+        }),
+        params: Type.Object({
+            asset: Type.String({
+                format: 'uuid',
+            }),
+            ext: Type.String(),
+        }),
+    }, async (req, res) => {
+        try {
+            const user = await Auth.as_user(config, req, { token: true });
+
+            const file = await config.models.ProfileFile.augmented_from(req.params.asset);
+
+            await profileFileControl.ensureReadPermission(file, user.email);
+
+            const object = await S3.getObject(`profile/${file.username}/${req.params.asset}.${req.params.ext}`);
+
+            if (object.contentLength !== undefined) res.set('Content-Length', String(object.contentLength));
+            if (object.contentType) res.set('Content-Type', object.contentType);
+
+            object.body.pipe(res);
+        } catch (err) {
+            Err.respond(err, res);
+        }
+    });
+
+    await schema.get('/profile/asset/:asset.pmtiles/tile', {
+        name: 'PMTiles TileJSON',
+        group: 'ProfileFile',
+        description: 'Get TileJSON for PMTiles asset',
+        query: Type.Object({
+            token: Type.Optional(Type.String()),
+        }),
+        params: Type.Object({
+            asset: Type.String(),
+        }),
+    }, async (req, res) => {
+        try {
+            const user = await Auth.as_user(config, req, { token: true });
+
+            const file = await config.models.ProfileFile.augmented_from(req.params.asset);
+
+            await profileFileControl.ensureReadPermission(file, user.email);
+
+            if (!await S3.exists(`profile/${file.username}/${req.params.asset}.pmtiles`)) {
+                throw new Err(404, null, 'Asset does not exist');
+            }
+
+            res.json(await profileAssetTileJSON(config, {
+                email: user.email,
+                owner: file.username,
+                asset: req.params.asset,
+            }));
+        } catch (err) {
+            Err.respond(err, res);
+        }
+    });
+}

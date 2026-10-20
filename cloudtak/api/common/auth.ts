@@ -1,0 +1,479 @@
+import { Request } from 'express';
+import Err from '@openaddresses/batch-error';
+import jwt from 'jsonwebtoken';
+import Config from './config.js';
+import { InferSelectModel } from 'drizzle-orm';
+import type { Profile, Connection, ConnectionToken, Layer } from './schema.js';
+import { authenticatedProfile, type AuthenticatedProfile } from './control/profile.js';
+
+export enum ResourceCreationScope {
+    SERVER = 'server',
+    USER = 'user',
+}
+
+export enum AuthUserAccess {
+    ADMIN = 'admin',
+    AGENCY = 'agency',
+    USER = 'user',
+}
+
+export function accessFor(profile: { system_admin: boolean; agency_admin: Array<number> | null }): AuthUserAccess {
+    if (profile.system_admin) return AuthUserAccess.ADMIN;
+    if (profile.agency_admin && profile.agency_admin.length) return AuthUserAccess.AGENCY;
+    return AuthUserAccess.USER;
+}
+
+function castUserAccessEnum(str: string): AuthUserAccess | undefined {
+    const value = AuthUserAccess[str.toUpperCase() as keyof typeof AuthUserAccess];
+    return value;
+}
+
+export type AuthResourceAccepted = {
+    access: AuthResourceAccess;
+    id?: string | number | undefined;
+};
+
+export enum AuthResourceAccess {
+    DATA = 'data',
+    LAYER = 'layer',
+    IMPORT = 'import',
+    LEASE = 'lease',
+    BASEMAP = 'basemap',
+    CONNECTION = 'connection',
+
+    // Only used for media-infra <=> CloudTAK requests
+    MEDIA = 'media',
+
+    // Becomes AuthUser
+    PROFILE = 'profile',
+}
+
+function castResourceAccessEnum(str: string): AuthResourceAccess | undefined {
+    const value = AuthResourceAccess[str.toUpperCase() as keyof typeof AuthResourceAccess];
+    return value;
+}
+
+export class AuthResource {
+    id: number | string | undefined;
+    access: AuthResourceAccess;
+    token: string;
+    internal: boolean;
+
+    constructor(
+        token: string,
+        access: AuthResourceAccess,
+        id: number | string | undefined,
+        internal: boolean,
+    ) {
+        this.token = token;
+        this.internal = internal;
+        this.access = access;
+        this.id = id;
+    }
+}
+
+export class AuthUser {
+    access: AuthUserAccess;
+    email: string;
+    token: string;
+    session?: string;
+
+    // Username of admin doing the impersonating - if this value is populated the calling user is guarenteed to be an admin
+    impersonate?: string;
+
+    constructor(access: AuthUserAccess, email: string, token: string, session?: string) {
+        this.access = access;
+        this.email = email;
+        this.token = token;
+        this.session = session;
+    }
+
+    is_admin(): boolean {
+        return this.access === AuthUserAccess.ADMIN;
+    }
+
+    is_user(): boolean {
+        return !!(this.email && this.email.length);
+    }
+}
+
+/**
+ * @class
+ */
+export default class Auth {
+    /**
+     * Is the requester authenticated - can be either a Resource or User auth
+     *
+     * @param config    - Server Config
+     * @param req       - Express Request
+     * @param opts.token        - Should URL query tokens be allowed (usually only for downloads)
+     * @param opts.anyResources - Any Resource token can use this endpoint
+     * @param resources         - Array of resource types that can use this endpoint
+     * @param opts.scope        - `<permission>:<level>` scope(s) a Layer or Connection token must hold in its `permissions` - every scope given is required
+     */
+    static async is_auth(config: Config, req: Request<any, any, any, any>, opts: {
+        token?: boolean;
+        anyResources?: boolean;
+        resources?: Array<AuthResourceAccepted>;
+        scope?: string | Array<string>;
+    } = {}): Promise<AuthResource | AuthUser> {
+        if (!opts.token) opts.token = false;
+        if (!opts.resources) opts.resources = [];
+        if (!opts.anyResources) opts.anyResources = false;
+
+        const auth = await auth_request(config, req, { token: opts.token });
+
+        if (!auth || !auth.access) {
+            throw new Err(403, null, 'Authentication Required');
+        }
+
+        if (auth instanceof AuthResource) {
+            const auth_resource = auth as AuthResource;
+
+            if (opts.anyResources && opts.resources.length) {
+                throw new Err(403, null, 'Server cannot specify defined resource access and any resource access together');
+            } else if (!opts.anyResources && !opts.resources.length) {
+                throw new Err(403, null, 'Resource token cannot access resource');
+            }
+
+            let connectionToken: InferSelectModel<typeof ConnectionToken> | undefined;
+            if (!auth_resource.internal) {
+                try {
+                    connectionToken = await config.models.ConnectionToken.from(auth_resource.token);
+                } catch (err) {
+                    if (err instanceof Error) {
+                        throw new Err(403, err.name === 'PublicError' ? err : new Error(String(err)), 'Token does not exist');
+                    } else {
+                        throw new Err(500, new Error(String(err)), 'Unknown Token Error');
+                    }
+                }
+            }
+
+            if (!opts.anyResources && !opts.resources.some((r) => {
+                if (r.id) {
+                    return r.access === auth_resource.access && r.id === auth_resource.id;
+                } else {
+                    return r.access === auth_resource.access;
+                }
+            })) {
+                throw new Err(403, null, 'Resource token cannot access this resource');
+            }
+
+            const scopes = opts.scope === undefined ? [] : Array.isArray(opts.scope) ? opts.scope : [opts.scope];
+
+            if (scopes.length && auth_resource.access === AuthResourceAccess.LAYER) {
+                if (auth_resource.id === undefined) throw new Err(401, null, 'Layer Resource Token must contain a Layer ID');
+
+                const layer = await config.models.Layer.from(auth_resource.id);
+
+                for (const scope of scopes) {
+                    if (!hasScope(layer.permissions, scope)) {
+                        throw new Err(403, null, `Layer token does not have the ${scope} permission`);
+                    }
+                }
+            } else if (scopes.length && auth_resource.access === AuthResourceAccess.CONNECTION && connectionToken) {
+                for (const scope of scopes) {
+                    if (!hasScope(connectionToken.permissions, scope)) {
+                        throw new Err(403, null, `Connection token does not have the ${scope} permission`);
+                    }
+                }
+            }
+        }
+
+        return auth;
+    }
+
+    static async is_connection(config: Config, req: Request<any, any, any, any>, opts: {
+        token?: boolean;
+        resources?: Array<AuthResourceAccepted>;
+        scope?: string;
+    }, connectionid: number): Promise<{
+        auth: AuthResource | AuthUser;
+        connection: InferSelectModel<typeof Connection>;
+        layer?: InferSelectModel<typeof Layer>;
+        profile?: InferSelectModel<typeof Profile>;
+    }> {
+        const auth = await this.is_auth(config, req, opts);
+
+        return await this.is_connection_auth(config, auth, connectionid);
+    }
+
+    /**
+     * Authorize an already parsed Auth object against a given Connection
+     *
+     * Only Layer tokens are scoped here - callers that bypass is_auth must gate
+     * which other resource token types are allowed before calling this
+     */
+    static async is_connection_auth(
+        config: Config,
+        auth: AuthResource | AuthUser,
+        connectionid: number,
+    ): Promise<{
+        auth: AuthResource | AuthUser;
+        connection: InferSelectModel<typeof Connection>;
+        layer?: InferSelectModel<typeof Layer>;
+        profile?: InferSelectModel<typeof Profile>;
+    }> {
+        const connection = await config.models.Connection.from(connectionid);
+
+        if (this.#is_user(auth)) {
+            const profile = await this.#as_profile(config, auth as AuthUser);
+
+            if (profile.system_admin === true) {
+                return { connection, profile, auth };
+            } else {
+                if (!connection.agency) throw new Err(401, null, 'Only a System Admin can access this connection');
+                if (!profile.agency_admin) throw new Err(401, null, 'Only an Agency Admin admin or higher can access connections');
+                if (!profile.agency_admin.includes(connection.agency)) throw new Err(401, null, `You are not an Agency Admin for Agency ${connection.agency}`);
+
+                return { connection, profile, auth };
+            }
+        } else {
+            const auth_resource = auth as AuthResource;
+
+            // If a resource token is used it's up to the caller to specify it is allowed via the resources array
+            // is_auth will disallow resource tokens when no resource array is set
+
+            if (auth_resource.access === AuthResourceAccess.LAYER) {
+                if (auth_resource.id === undefined) throw new Err(401, null, 'Layer Resource Token must contain a Layer ID');
+                const layer = await config.models.Layer.from(auth_resource.id);
+                if (layer.connection !== connectionid) throw new Err(401, null, 'Layer does not belong to this Connection');
+                return { auth, connection, layer };
+            } else {
+                return { auth, connection };
+            }
+        }
+    }
+
+    static async is_user(config: Config, req: Request<any, any, any, any>): Promise<boolean> {
+        const auth = await this.is_auth(config, req);
+        return this.#is_user(auth);
+    }
+
+    static #is_user(auth: AuthResource | AuthUser): boolean {
+        return auth instanceof AuthUser;
+    }
+
+    static async is_resource(config: Config, req: Request<any, any, any, any>): Promise<boolean> {
+        const auth = await this.is_auth(config, req);
+        return this.#is_resource(auth);
+    }
+
+    static #is_resource(auth: AuthResource | AuthUser): boolean {
+        return auth instanceof AuthResource;
+    }
+
+    static async as_resource(config: Config, req: Request<any, any, any, any>, opts: {
+        anyResources?: boolean;
+        resources?: Array<AuthResourceAccepted>;
+        token?: boolean;
+    } = {}): Promise<AuthResource> {
+        if (!opts.token) opts.token = false;
+        const auth = await this.is_auth(config, req, opts);
+
+        if (this.#is_user(auth)) throw new Err(401, null, 'Only a resource token can access this resource');
+
+        return auth as AuthResource;
+    }
+
+    /**
+     * OpenAPI Security Requirements for a route guarded by `as_user_or_scope`
+     */
+    static security(scope: string | Array<string>, opts: {
+        connection?: boolean;
+    } = {}): Array<Record<string, Array<string>>> {
+        const security: Array<Record<string, Array<string>>> = [
+            { bearerAuth: [] },
+            { layerAuth: Array.isArray(scope) ? scope : [scope] },
+        ];
+
+        if (opts.connection) security.push({ connectionAuth: [] });
+
+        return security;
+    }
+
+    /**
+     * Allow any authenticated user, or a Layer resource token whose stored
+     * permissions include the given `<permission>:<level>` scope
+     */
+    static async as_user_or_scope(config: Config, req: Request<any, any, any, any>, scope: string): Promise<AuthUser | AuthResource> {
+        return await this.is_auth(config, req, {
+            resources: [{ access: AuthResourceAccess.LAYER }],
+            scope,
+        });
+    }
+
+    static async impersonate(
+        config: Config,
+        req: Request<any, any, any, any>,
+        impersonate: string,
+    ): Promise<AuthUser> {
+        const adminUser = await this.as_user(config, req, { admin: true });
+
+        const imp = await config.models.Profile.from(impersonate);
+
+        const resolved = new AuthUser(accessFor(imp), impersonate, adminUser.token);
+        resolved.impersonate = adminUser.email;
+        return resolved;
+    }
+
+    static async as_user(config: Config, req: Request<any, any, any, any>, opts: {
+        token?: boolean;
+        admin?: boolean;
+    } = {}): Promise<AuthUser> {
+        if (!opts.token) opts.token = false;
+        const auth = await this.is_auth(config, req, { token: opts.token });
+
+        if (this.#is_resource(auth)) throw new Err(401, null, 'Only an authenticated user can access this resource');
+
+        const user = auth as AuthUser;
+
+        if (opts.admin && user.access !== AuthUserAccess.ADMIN) {
+            throw new Err(401, null, 'User must be a System Administrator to access this resource');
+        }
+
+        return user;
+    }
+
+    static async #as_profile(config: Config, user: AuthUser): Promise<AuthenticatedProfile> {
+        return await authenticatedProfile(config, user.email);
+    }
+
+    /**
+     * The authenticated user's Profile - a Profile that has been provisioned (SCIM)
+     * but has never logged in has no TAK certificate and is rejected
+     */
+    static async as_profile(config: Config, req: Request<any, any, any, any>, opts: {
+        token?: boolean;
+        admin?: boolean;
+    } = {}): Promise<AuthenticatedProfile> {
+        const user = await this.as_user(config, req, opts);
+        return await this.#as_profile(config, user);
+    }
+}
+
+export function hasScope(permissions: Array<string>, scope: string): boolean {
+    const wildcard = scope.slice(0, scope.indexOf(':') + 1) + '*';
+    return permissions.includes(scope) || permissions.includes(wildcard);
+}
+
+async function auth_request(
+    config: Config,
+    req: Request<any, any, any, any>,
+    opts?: {
+        token: boolean;
+    },
+): Promise<AuthResource | AuthUser> {
+    try {
+        if (req.headers && req.header('authorization')) {
+            const authorization = (req.header('authorization') || '').split(' ');
+
+            if (authorization[0].toLowerCase() !== 'bearer') {
+                throw new Err(401, null, 'Only "Bearer" authorization header is allowed');
+            }
+
+            if (!authorization[1]) {
+                throw new Err(401, null, 'No bearer token present');
+            }
+
+            return await tokenParser(config, authorization[1], config.SigningSecret);
+        } else if (
+            opts
+            && opts.token
+            && req.query
+            && req.query.token
+            && typeof req.query.token === 'string'
+        ) {
+            return await tokenParser(config, req.query.token, config.SigningSecret);
+        } else {
+            throw new Err(401, null, 'No Auth Present');
+        }
+    } catch (err) {
+        if (err instanceof Error && err.name === 'PublicError') {
+            throw err;
+        } else {
+            throw new Err(401, new Error(String(err)), 'Invalid Token');
+        }
+    }
+}
+
+export async function tokenParser(
+    config: Config,
+    token: string,
+    secret: string,
+): Promise<AuthUser | AuthResource> {
+    if (token.startsWith('etl.')) {
+        token = token.replace(/^etl\./, '');
+        const decoded = jwt.verify(token, secret);
+        if (typeof decoded === 'string') throw new Err(400, null, 'Decoded JWT Should be Object');
+        if (!decoded.access || typeof decoded.access !== 'string') throw new Err(401, null, 'Invalid Token');
+        if (!decoded.internal || typeof decoded.internal !== 'boolean') decoded.internal = false;
+        if (!decoded.internal && !decoded.id) throw new Err(401, null, 'Invalid Token');
+
+        const access = castResourceAccessEnum(decoded.access);
+        if (!access) throw new Err(400, null, 'Invalid Resource Access Value');
+
+        if (access == AuthResourceAccess.PROFILE) {
+            if (!decoded.internal) {
+                try {
+                    await config.models.ProfileToken.from(`etl.${token}`);
+                } catch (err) {
+                    throw new Err(401, err instanceof Error && err.name === 'PublicError' ? err : new Error(String(err)), 'Token does not exist');
+                }
+            }
+
+            const profile = await config.models.Profile.from(decoded.id);
+
+            if (profile.disabled) throw new Err(401, null, 'User is disabled');
+
+            return new AuthUser(accessFor(profile), profile.username, `etl.${token}`);
+        } else {
+            return new AuthResource(`etl.${token}`, access, decoded.id, decoded.internal);
+        }
+    } else {
+        const decoded = jwt.verify(token, secret);
+        if (typeof decoded === 'string') throw new Err(400, null, 'Decoded JWT Should be Object');
+        if (!decoded.email || typeof decoded.email !== 'string') throw new Err(401, null, 'Invalid Token');
+        if (!decoded.access || typeof decoded.access !== 'string') throw new Err(401, null, 'Invalid Token');
+
+        let access = castUserAccessEnum(decoded.access);
+        if (!access) throw new Err(400, null, 'Invalid User Access Value');
+
+        const session = typeof decoded.s === 'string' ? decoded.s : undefined;
+
+        // Tokens without an `s` claim are server minted and have no session to check
+        if (session) {
+            let profileSession;
+            try {
+                profileSession = await config.models.ProfileSession.from(session);
+            } catch (err) {
+                throw new Err(401, err instanceof Error && err.name === 'PublicError' ? err : new Error(String(err)), 'Session does not exist');
+            }
+
+            if (profileSession.username !== decoded.email) throw new Err(401, null, 'Session does not exist');
+
+            // Session tokens live long enough that the profile, not the claim, decides access
+            const profile = await config.models.Profile.from(decoded.email);
+            if (profile.disabled) throw new Err(401, null, 'User is disabled');
+            access = accessFor(profile);
+        }
+
+        return new AuthUser(access, decoded.email, token, session);
+    }
+}
+
+/**
+ * OIDC authentication is performed entirely in-app (see api/lib/oidc.ts and the
+ * /login/oidc + /login/oidc/callback routes) using a standard Authorization Code
+ * flow against the configured IdP. There is no ALB-level authentication step and
+ * therefore nothing to verify here - the access/id tokens used by the callback
+ * route come back over a direct, CloudTAK-initiated TLS connection to the IdP's
+ * token endpoint, so they are implicitly trusted.
+ */
+export function isOidcEnabled(): boolean {
+    return process.env.OIDC_ENABLED === 'true';
+}
+
+export function isOidcForced(): boolean {
+    return process.env.OIDC_FORCED === 'true';
+}

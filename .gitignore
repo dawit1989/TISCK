@@ -2,6 +2,11 @@
 .env
 *.local
 
+# Node & Build artifacts
+node_modules/
+dist/
+build/
+
 # Logs and databases
 *.log
 *.sqlite

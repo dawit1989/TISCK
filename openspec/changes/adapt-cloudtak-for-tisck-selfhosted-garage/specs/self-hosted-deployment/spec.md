@@ -50,13 +50,17 @@ The Compose configuration SHALL define health checks for PostGIS and Garage.
 - **WHEN** the store (Garage) service is running
 - **THEN** Docker reports its health status based on S3 API port readiness
 
-### Requirement: Administrative ports bound to localhost
-Database, object store administration, and internal service ports SHALL NOT be exposed to external network interfaces by default.
+### Requirement: Network interface isolation and port binding
+Public tactical ingress services SHALL be accessible across the local network (`0.0.0.0`), while database, object store administration, and internal service ports SHALL NOT be exposed to external network interfaces by default (`127.0.0.1` or internal Docker network).
+
+#### Scenario: Public ingress service port bindings
+- **WHEN** docker-compose services are running
+- **THEN** the API service (port 5000), Tiles service (port 5002), and Media streaming ports (8554, 8889, 1935) SHALL be bound to `0.0.0.0` to permit LAN tactical client connectivity
 
 #### Scenario: PostGIS port binding
 - **WHEN** docker-compose services are running
-- **THEN** PostgreSQL port 5432 is bound to `127.0.0.1` only
+- **THEN** PostgreSQL port 5432 SHALL be bound to `127.0.0.1` only
 
-#### Scenario: Garage admin port binding
+#### Scenario: Garage admin and S3 port binding
 - **WHEN** docker-compose services are running
-- **THEN** Garage admin API port 3903 SHALL NOT be exposed outside the Docker network
+- **THEN** Garage admin API port 3903 and S3 data port 3900 SHALL be bound to `127.0.0.1` only or kept strictly internal to the Docker network, with all client tile and asset access proxied through the API and Tiles services

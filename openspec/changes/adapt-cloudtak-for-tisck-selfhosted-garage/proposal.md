@@ -29,14 +29,13 @@ _None — this is the initial TISCK spec baseline; there are no existing specs t
 
 ## Impact
 
-- **docker-compose.yml**: Replace `media-infra` image reference; add health checks; bind admin ports to localhost.
-- **api/common/config.ts**: `fetchSecret()` must gracefully fall back to `SigningSecret` env var in docker-compose mode (lines 181, 266-277). `fetchArnPrefix()` (STS) must not be called in docker-compose mode (lines 246-263).
-- **api/common/etl-events.ts**: `queueUrl()` constructs an AWS SQS URL using `fetchArnPrefix()` (line 58-59) — must be stubbed or replaced in docker-compose mode.
-- **api/common/aws/queue.ts**: SQS client — runtime dependency only when ETL outgoing events are enabled and CLOUDTAK_Mode=AWS.
-- **api/stateless/lib/aws/cloudformation.ts**: Full CloudFormation CRUD — AWS-mode only, never reached in docker-compose mode.
-- **api/stateless/lib/aws/lambda.ts, ecr.ts, alarm.ts, lambda-logs.ts**: AWS-mode only runtime modules for Layer deployment/monitoring.
-- **api/common/aws/s3.ts, tasks/pmtiles/lib/s3.ts, tasks/events/src/s3.ts**: S3 clients already support custom endpoints via `AWS_S3_Endpoint` — these are Garage-compatible and need validation, not replacement.
-- **cloudformation/**: Templates — deployment tooling only, not a runtime dependency. Preserve for upstream compatibility.
-- **.env.example**: Already configured for Garage. Needs documentation of TISCK-specific values.
-- **garage.toml**: Single-node Garage configuration already present and functional for development.
-- **cloudtak.sh**: Already has Garage RPC secret generation, legacy MinIO migration, and docker-compose management. Preserve.
+- **docker-compose.yml**: `cloudtak/docker-compose.yml` - Replace `media-infra` image reference; add health checks; bind admin ports to localhost.
+- **cloudtak/api/common/config.ts**: `fetchSecret()` must gracefully fall back to `SigningSecret` env var in docker-compose mode (lines 181, 266-277). `fetchArnPrefix()` (STS) must not be called in docker-compose mode (lines 246-263).
+- **cloudtak/api/common/etl-events.ts**: `queueUrl()` constructs an AWS SQS URL using `fetchArnPrefix()` (line 58-59) — must be stubbed or replaced in docker-compose mode.
+- **cloudtak/api/common/aws/queue.ts**: SQS client — runtime dependency only when ETL outgoing events are enabled and CLOUDTAK_Mode=AWS.
+- **cloudtak/api/stateless/lib/aws/cloudformation.ts**: Full CloudFormation CRUD — AWS-mode only, never reached in docker-compose mode.
+- **cloudtak/api/stateless/lib/aws/lambda.ts, ecr.ts, alarm.ts, lambda-logs.ts**: AWS-mode only runtime modules for Layer deployment/monitoring.
+- **cloudtak/api/common/aws/s3.ts, cloudtak/tasks/pmtiles/lib/s3.ts, cloudtak/tasks/events/src/s3.ts**: S3 clients already support custom endpoints via `AWS_S3_Endpoint` — these are Garage-compatible and need validation, not replacement.
+- **cloudtak/cloudformation/**: Templates — deployment tooling only, not a runtime dependency. Preserve for upstream compatibility.
+- **cloudtak/.env.example**: Already configured for Garage. Needs documentation of TISCK-specific values.
+- **cloudtak/garage.toml**: Single-node Garage configuration already present and functional for development.

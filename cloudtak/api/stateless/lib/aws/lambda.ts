@@ -1,0 +1,426 @@
+import Err from '@openaddresses/batch-error';
+import cf from '@openaddresses/cloudfriend';
+import type { AugmentedLayer } from '../../../common/models/Layer.js';
+import AWSLambda from '@aws-sdk/client-lambda';
+import Config from '../../../common/config.js';
+import jwt from 'jsonwebtoken';
+import Schedule from '../../../common/schedule.js';
+import process from 'node:process';
+import { Static } from '@sinclair/typebox';
+import { StackFrame } from './cloudformation.js';
+import { Capabilities } from '@tak-ps/etl';
+import { DEFAULT_SCHEMA_ID } from '../../../common/types.js';
+import type { NamedSchema, TaskCapabilitiesResponse } from '../../../common/types.js';
+import ECR from './ecr.js';
+
+function repositoryName(): string {
+    return String(process.env.ECR_TASKS_REPOSITORY_NAME);
+}
+
+/**
+ * @class
+ */
+export default class Lambda {
+    /**
+     * TAK-NZ: name of a CloudFormation export published by a sibling stack
+     * (webhooks / mail) that layer stacks import.
+     *
+     * Upstream only has `tak-cloudtak-<env>` stack names and derives the sibling
+     * stack name by rewriting that prefix. TAK-NZ's stack is `TAK-<env>-CloudTAK`,
+     * which never matches that lowercase prefix, so the rewrite was a no-op and
+     * the import resolved to a name nothing exports (layer stacks with webhooks
+     * or email failed to create). The TAK-NZ CDK (cdk/lib/constructs/webhooks.ts
+     * and mail.ts) exports `<StackName>-<sibling>-<suffix>` instead.
+     * Upstream-style names keep the upstream derivation. See docs/fork/FORK-DELTA.md.
+     */
+    static siblingExport(
+        stackName: string,
+        sibling: 'webhooks' | 'mail',
+        suffix: string,
+    ): string {
+        if (/^tak-cloudtak-/.test(stackName)) {
+            return stackName.replace(/^tak-cloudtak-/, `tak-cloudtak-${sibling}-`) + `-${suffix}`;
+        }
+
+        return `${stackName}-${sibling}-${suffix}`;
+    }
+
+    static async capabilities(
+        config: Config,
+        layerid: number,
+    ): Promise<Static<typeof TaskCapabilitiesResponse>> {
+        const res = await Lambda.invoke(config, layerid, 'capabilities');
+
+        if (!res) {
+            throw new Err(400, null, 'Capabilities API returned empty response');
+        }
+
+        return Lambda.normalizeCapabilities(JSON.parse(res.toString()) as Static<typeof Capabilities>);
+    }
+
+    /**
+     * Tasks return either a single Output schema or an array of named schemas -
+     * a single schema is mapped to the `default` name so consumers only handle named schemas
+     */
+    static normalizeCapabilities(capabilities: Static<typeof Capabilities>): Static<typeof TaskCapabilitiesResponse> {
+        const normalized = structuredClone(capabilities) as Static<typeof TaskCapabilitiesResponse>;
+
+        for (const flow of ['incoming', 'outgoing'] as const) {
+            const schema = capabilities[flow]?.schema;
+            if (!schema) continue;
+
+            normalized[flow]!.schema.output = Lambda.namedSchemas(schema.output);
+        }
+
+        return normalized;
+    }
+
+    static namedSchemas(output: unknown): Array<Static<typeof NamedSchema>> {
+        if (output === null || output === undefined) return [];
+
+        if (Array.isArray(output)) {
+            return output.filter((entry): entry is Static<typeof NamedSchema> => {
+                return typeof entry === 'object' && entry !== null
+                    && typeof entry.id === 'string'
+                    && typeof entry.schema === 'object' && entry.schema !== null;
+            });
+        }
+
+        if (typeof output !== 'object') return [];
+
+        return [{ id: DEFAULT_SCHEMA_ID, schema: output as Record<string, unknown> }];
+    }
+
+    static async invoke(config: Config, layerid: number, type?: string): Promise<Buffer | undefined> {
+        const lambda = new AWSLambda.LambdaClient({ region: process.env.AWS_REGION });
+        const FunctionName = `${config.StackName}-layer-${layerid}`;
+
+        let InvocationType: AWSLambda.InvocationType = 'Event';
+        if (type && ['capabilities'].includes(type)) {
+            InvocationType = 'RequestResponse';
+        }
+
+        const res = await lambda.send(new AWSLambda.InvokeCommand({
+            FunctionName,
+            InvocationType,
+            Payload: type ? Buffer.from(JSON.stringify({ type })) : Buffer.from(''),
+        }));
+
+        if (res.Payload) {
+            return Buffer.from(res.Payload);
+        } else {
+            return;
+        }
+    }
+
+    static async currentImageExists(config: Config, layerid: number): Promise<boolean> {
+        const lambda = new AWSLambda.LambdaClient({ region: process.env.AWS_REGION });
+        const FunctionName = `${config.StackName}-layer-${layerid}`;
+
+        try {
+            const res = await lambda.send(new AWSLambda.GetFunctionCommand({ FunctionName }));
+            const imageUri = res.Code?.ResolvedImageUri || res.Code?.ImageUri;
+
+            if (!imageUri) return true;
+
+            const digest = imageUri.match(/@([^@]+)$/)?.[1];
+            if (digest) return await ECR.existsDigest(digest);
+
+            const tag = imageUri.match(/:([^/:@]+)$/)?.[1];
+            if (!tag) return true;
+
+            return await ECR.exists(tag);
+        } catch (err) {
+            if (err instanceof Error && /ResourceNotFoundException|Function not found/i.test(err.message)) {
+                return false;
+            }
+
+            throw err;
+        }
+    }
+
+    static async requiresRecreate(config: Config, layerid: number): Promise<boolean> {
+        return !(await this.currentImageExists(config, layerid));
+    }
+
+    static generate(
+        config: Config,
+        layer: Static<typeof AugmentedLayer>,
+    ): Static<typeof StackFrame> {
+        const StackName = `${config.StackName}-layer-${layer.id}`;
+
+        const stack: any = {
+            Description: `${layer.name}`,
+            Parameters: {
+                Task: {
+                    Type: 'String',
+                    Default: layer.task,
+                },
+                UniqueID: {
+                    Type: 'String',
+                    Default: layer.uuid,
+                },
+            },
+            Resources: {
+                ETLFunctionLogs: {
+                    Type: 'AWS::Logs::LogGroup',
+                    Properties: {
+                        LogGroupName: `/aws/lambda/${StackName}`,
+                        RetentionInDays: 7,
+                    },
+                },
+                ETLFunction: {
+                    Type: 'AWS::Lambda::Function',
+                    Properties: {
+                        FunctionName: StackName,
+                        MemorySize: layer.memory,
+                        Timeout: layer.timeout,
+                        Description: `${StackName}: ${layer.name}`,
+                        PackageType: 'Image',
+                        Environment: {
+                            Variables: {
+                                ETL_API: cf.importValue(config.StackName + '-hosted'),
+                                ETL_TOKEN: `etl.${jwt.sign({ access: 'layer', id: layer.id, internal: true }, config.SigningSecret)}`,
+                                ETL_LAYER: layer.id,
+                            },
+                        },
+                        Role: cf.importValue(config.StackName + '-etl-role'),
+                        Code: {
+                            ImageUri: cf.join([cf.accountId, '.dkr.ecr.', cf.region, `.amazonaws.com/${repositoryName()}:`, cf.ref('Task')]),
+                        },
+                    },
+                },
+            },
+        };
+
+        if (layer.outgoing) {
+            stack.Resources.OutgoingQueue = {
+                Type: 'AWS::SQS::Queue',
+                Properties: {
+                    ContentBasedDeduplication: true,
+                    QueueName: cf.join([cf.stackName, '-outgoing.fifo']),
+                    FifoQueue: true,
+                    RedrivePolicy: {
+                        deadLetterTargetArn: cf.getAtt('OutgoingDeadQueue', 'Arn'),
+                        maxReceiveCount: 3,
+                    },
+                    VisibilityTimeout: layer.timeout,
+                },
+            };
+
+            stack.Resources.OutgoingDeadQueue = {
+                Type: 'AWS::SQS::Queue',
+                Properties: {
+                    FifoQueue: true,
+                    QueueName: cf.join([cf.stackName, '-outgoing-dead.fifo']),
+                    VisibilityTimeout: layer.timeout,
+                },
+            };
+
+            stack.Resources.OutgoingDeadQueueBacklogAlarm = {
+                Type: 'AWS::CloudWatch::Alarm',
+                Properties: {
+                    AlarmName: cf.join('-', [cf.stackName, 'outgoing-dead-backlog']),
+                    Namespace: 'AWS/SQS',
+                    MetricName: 'ApproximateNumberOfMessagesVisible',
+                    ComparisonOperator: 'GreaterThanThreshold',
+                    Threshold: 1000,
+                    EvaluationPeriods: 5,
+                    Statistic: 'Maximum',
+                    Period: 60,
+                    AlarmActions: [],
+                    Dimensions: [{
+                        Name: 'QueueName',
+                        Value: cf.getAtt('OutgoingDeadQueue', 'QueueName'),
+                    }],
+                },
+            };
+
+            stack.Resources.OutgoingQueueBacklogAlarm = {
+                Type: 'AWS::CloudWatch::Alarm',
+                Properties: {
+                    AlarmName: cf.join('-', [cf.stackName, 'outgoing-backlog']),
+                    Namespace: 'AWS/SQS',
+                    MetricName: 'ApproximateNumberOfMessagesVisible',
+                    ComparisonOperator: 'GreaterThanThreshold',
+                    Threshold: 1000,
+                    EvaluationPeriods: 5,
+                    Statistic: 'Maximum',
+                    Period: 60,
+                    AlarmActions: [],
+                    Dimensions: [{
+                        Name: 'QueueName',
+                        Value: cf.getAtt('OutgoingQueue', 'QueueName'),
+                    }],
+                },
+            };
+
+            stack.Resources.OutgoingLambdaSource = {
+                Type: 'AWS::Lambda::EventSourceMapping',
+                Properties: {
+                    Enabled: 'True',
+                    BatchSize: 1,
+                    EventSourceArn: cf.getAtt('OutgoingQueue', 'Arn'),
+                    FunctionName: cf.ref('ETLFunction'),
+                },
+            };
+        }
+
+        stack.Resources.LambdaAlarm = {
+            Type: 'AWS::CloudWatch::Alarm',
+            Properties: {
+                AlarmName: StackName,
+                ActionsEnabled: true,
+                AlarmActions: [],
+                MetricName: 'Errors',
+                Namespace: 'AWS/Lambda',
+                Statistic: 'Average',
+                Dimensions: [{
+                    Name: 'FunctionName',
+                    Value: StackName,
+                }],
+                Period: layer.alarm_period,
+                EvaluationPeriods: layer.alarm_evals,
+                DatapointsToAlarm: layer.alarm_points,
+                Threshold: 0,
+                ComparisonOperator: 'GreaterThanThreshold',
+                TreatMissingData: 'missing',
+            },
+        };
+
+        stack.Resources.LambdaNoInvocationAlarm = {
+            Type: 'AWS::CloudWatch::Alarm',
+            Properties: {
+                AlarmName: cf.join([StackName, '-no-invocations']),
+                ActionsEnabled: true,
+                AlarmActions: [],
+                MetricName: 'Invocations',
+                Namespace: 'AWS/Lambda',
+                Statistic: 'Average',
+                Dimensions: [{
+                    Name: 'FunctionName',
+                    Value: StackName,
+                }],
+                Period: layer.alarm_period,
+                EvaluationPeriods: layer.alarm_evals,
+                DatapointsToAlarm: layer.alarm_points,
+                Threshold: 0,
+                ComparisonOperator: 'LessThanOrEqualToThreshold',
+                TreatMissingData: 'missing',
+            },
+        };
+
+        if (layer.incoming) {
+            if (layer.incoming.webhooks) {
+                stack.Resources.WebHookResourceBase = {
+                    Type: 'AWS::ApiGatewayV2::Route',
+                    Properties: {
+                        RouteKey: cf.join(['ANY /', cf.ref('UniqueID')]),
+                        ApiId: cf.importValue(Lambda.siblingExport(config.StackName, 'webhooks', 'api')),
+                        Target: cf.join(['integrations/', cf.ref('WebHookResourceIntegration')]),
+                    },
+                };
+
+                stack.Resources.WebHookResource = {
+                    Type: 'AWS::ApiGatewayV2::Route',
+                    Properties: {
+                        RouteKey: cf.join(['ANY /', cf.ref('UniqueID'), '/{proxy+}']),
+                        ApiId: cf.importValue(Lambda.siblingExport(config.StackName, 'webhooks', 'api')),
+                        Target: cf.join(['integrations/', cf.ref('WebHookResourceIntegration')]),
+                    },
+                };
+
+                stack.Resources.WebHookResourceIntegration = {
+                    Type: 'AWS::ApiGatewayV2::Integration',
+                    Properties: {
+                        ApiId: cf.importValue(Lambda.siblingExport(config.StackName, 'webhooks', 'api')),
+                        IntegrationType: 'AWS_PROXY',
+                        IntegrationUri: cf.getAtt('ETLFunction', 'Arn'),
+                        CredentialsArn: cf.importValue(Lambda.siblingExport(config.StackName, 'webhooks', 'role')),
+                        PayloadFormatVersion: '2.0',
+                    },
+                };
+            }
+
+            if (layer.incoming.email && layer.enabled) {
+                // Registers the Layer with the router in cloudformation/lib/mail-lambda.cjs
+                stack.Resources.EmailParameter = {
+                    Type: 'AWS::SSM::Parameter',
+                    Properties: {
+                        Type: 'String',
+                        Name: cf.join([
+                            cf.importValue(Lambda.siblingExport(config.StackName, 'mail', 'layer-prefix')),
+                            cf.ref('UniqueID'),
+                        ]),
+                        Description: `${StackName}: Incoming Email`,
+                        Value: cf.join([
+                            '{"arn":"', cf.getAtt('ETLFunction', 'Arn'),
+                            '","senders":', JSON.stringify(layer.incoming.email_senders),
+                            '}',
+                        ]),
+                    },
+                };
+            }
+
+            if (layer.incoming.cron && Schedule.is_aws(layer.incoming.cron)) {
+                stack.Parameters.ScheduleExpression = {
+                    Type: 'String',
+                    Default: layer.incoming.cron,
+                };
+                stack.Parameters.Events = {
+                    Type: 'String',
+                    Default: layer.enabled ? 'ENABLED' : 'DISABLED',
+                };
+                stack.Resources.ETLEvents = {
+                    Type: 'AWS::Events::Rule',
+                    Properties: {
+                        Description: StackName,
+                        State: cf.ref('Events'),
+                        ScheduleExpression: cf.ref('ScheduleExpression'),
+                        Targets: [{
+                            Id: 'TagWatcherScheduler',
+                            Arn: cf.getAtt('ETLFunction', 'Arn'),
+                        }],
+                    },
+                };
+                stack.Resources.ETLFunctionInvoke = {
+                    Type: 'AWS::Lambda::Permission',
+                    Properties: {
+                        FunctionName: cf.getAtt('ETLFunction', 'Arn'),
+                        Action: 'lambda:InvokeFunction',
+                        Principal: 'events.amazonaws.com',
+                        SourceArn: cf.getAtt('ETLEvents', 'Arn'),
+                    },
+                };
+            }
+        }
+
+        if (layer.priority !== 'off') {
+            if (stack.Resources.LambdaAlarm) {
+                stack.Resources.LambdaAlarm.Properties.AlarmActions.push(
+                    cf.join(['arn:', cf.partition, ':sns:', cf.region, `:`, cf.accountId, `:${config.StackName}-${layer.priority}-urgency`]),
+                );
+            }
+
+            if (stack.Resources.OutgoingDeadQueueBacklogAlarm) {
+                stack.Resources.OutgoingDeadQueueBacklogAlarm.Properties.AlarmActions.push(
+                    cf.join(['arn:', cf.partition, ':sns:', cf.region, `:`, cf.accountId, `:${config.StackName}-${layer.priority}-urgency`]),
+                );
+            }
+
+            if (stack.Resources.OutgoingQueueBacklogAlarm) {
+                stack.Resources.OutgoingQueueBacklogAlarm.Properties.AlarmActions.push(
+                    cf.join(['arn:', cf.partition, ':sns:', cf.region, `:`, cf.accountId, `:${config.StackName}-${layer.priority}-urgency`]),
+                );
+            }
+
+            if (stack.Resources.LambdaNoInvocationAlarm) {
+                stack.Resources.LambdaNoInvocationAlarm.Properties.AlarmActions.push(
+                    cf.join(['arn:', cf.partition, ':sns:', cf.region, `:`, cf.accountId, `:${config.StackName}-${layer.priority}-urgency`]),
+                );
+            }
+        }
+
+        return stack;
+    }
+}

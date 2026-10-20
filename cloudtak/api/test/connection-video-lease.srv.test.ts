@@ -1,0 +1,107 @@
+import test from 'node:test';
+import assert from 'node:assert';
+import jwt from 'jsonwebtoken';
+import Flight from './flight.js';
+
+const flight = new Flight();
+
+flight.init({ takserver: true });
+flight.takeoff();
+flight.user();
+flight.integration('test-task');
+
+flight.connection();
+
+test('GET: api/connection/1/video/lease', async () => {
+    try {
+        const res = await flight.fetch('/api/connection/1/video/lease', {
+            method: 'GET',
+            auth: {
+                bearer: flight.token.admin,
+            },
+        }, true);
+
+        assert.deepEqual(res.body, {
+            total: 0,
+            items: [],
+        });
+    } catch (err) {
+        assert.ifError(err);
+    }
+});
+
+test('POST: api/connection/1/video/lease', async () => {
+    try {
+        const res = await flight.fetch('/api/connection/1/video/lease', {
+            method: 'POST',
+            auth: {
+                bearer: flight.token.admin,
+            },
+            body: {
+                name: 'TEST Lease',
+            },
+        }, false);
+
+        assert.deepEqual(res.body, {
+            status: 400,
+            message: 'Media Integration is not configured',
+            messages: [],
+        });
+    } catch (err) {
+        assert.ifError(err);
+    }
+});
+
+test('Layer token: api/connection/1/video/lease - video:read only', async () => {
+    try {
+        await flight.config!.models.Layer.generate({
+            name: 'Video Lease Layer',
+            task: 1,
+            version: '1.0.0',
+            connection: 1,
+            permissions: ['video:read'],
+        });
+
+        const layerToken = 'etl.' + jwt.sign({ access: 'layer', id: 1, internal: true }, 'coe-wildland-fire');
+
+        const list = await flight.fetch('/api/connection/1/video/lease', {
+            method: 'GET',
+            auth: { bearer: layerToken },
+        }, true);
+
+        assert.ok(Array.isArray(list.body.items));
+
+        const create = await flight.fetch('/api/connection/1/video/lease', {
+            method: 'POST',
+            auth: { bearer: layerToken },
+            body: { name: 'Denied Lease' },
+        }, false);
+
+        assert.equal(create.status, 403);
+        assert.equal(create.body.message, 'Layer token does not have the video:create permission');
+    } catch (err) {
+        assert.ifError(err);
+    }
+});
+
+test('PUT api/config', async () => {
+    try {
+        const res = await flight.fetch('/api/config', {
+            method: 'PUT',
+            auth: {
+                bearer: flight.token.admin,
+            },
+            body: {
+                'media::url': 'https://video.example.com',
+            },
+        }, false);
+
+        assert.deepEqual(res.body, {
+            'media::url': 'https://video.example.com',
+        });
+    } catch (err) {
+        assert.ifError(err);
+    }
+});
+
+flight.landing();

@@ -24,18 +24,18 @@ TISCK adapts this codebase into an offline-first, self-contained deployment suit
 ## Decisions
 
 ### 1. Guard AWS SDK Invocations by Mode
-- **Decision**: In `api/common/config.ts`, `fetchSecret()` checks `CLOUDTAK_Mode === 'docker-compose'`. If true and `SigningSecret` is set in the environment, it returns the secret immediately without instantiating or querying AWS SecretsManager. Similarly, `fetchArnPrefix()` returns a fallback prefix or is bypassed in docker-compose mode.
+- **Decision**: In `cloudtak/api/common/config.ts`, `fetchSecret()` checks `CLOUDTAK_Mode === 'docker-compose'`. If true and `SigningSecret` is set in the environment, it returns the secret immediately without instantiating or querying AWS SecretsManager. Similarly, `fetchArnPrefix()` returns a fallback prefix or is bypassed in docker-compose mode.
 - **Alternatives considered**:
   - *Mock AWS endpoint (e.g. LocalStack)*: Adds heavy memory and CPU overhead; unnecessary since CloudTAK already uses environment variables for most configuration in docker-compose mode.
   - *Refactoring all configuration loading*: Higher regression risk than surgical guards at the secret/ARN retrieval points.
 
 ### 2. Standard Upstream MediaMTX Container
-- **Decision**: Replace `ghcr.io/dfpc-coe/media-infra:v9.10.0` in `docker-compose.yml` with `bluenviron/mediamtx:latest-ffmpeg` (or pinned stable tag), mounting the local `mediamtx.yml` configuration.
+- **Decision**: Replace `ghcr.io/dfpc-coe/media-infra:v9.10.0` in `cloudtak/docker-compose.yml` with `bluenviron/mediamtx:latest-ffmpeg` (or pinned stable tag), mounting the local `mediamtx.yml` configuration.
 - **Alternatives considered**:
   - *Retaining `media-infra`*: Relies on an external dfpc-coe repository and container registry that may be inaccessible in offline environments or modified upstream.
 
 ### 3. Garage S3 Endpoint & Path-Style Access Configuration
-- **Decision**: Retain Garage v2.4.1 as configured in `docker-compose.yml` and `garage.toml`. Configure the AWS S3 SDK clients in `api/common/aws/s3.ts`, `tasks/pmtiles/lib/s3.ts`, and `tasks/events/src/s3.ts` with:
+- **Decision**: Retain Garage v2.4.1 as configured in `cloudtak/docker-compose.yml` and `cloudtak/garage.toml`. Configure the AWS S3 SDK clients in `cloudtak/api/common/aws/s3.ts`, `cloudtak/tasks/pmtiles/lib/s3.ts`, and `cloudtak/tasks/events/src/s3.ts` with:
   - `endpoint: process.env.AWS_S3_Endpoint` (e.g. `http://store:3900`)
   - `forcePathStyle: true`
   - Explicit dummy/local credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) from environment variables.
@@ -43,7 +43,7 @@ TISCK adapts this codebase into an offline-first, self-contained deployment suit
   - *MinIO*: Heavier resource footprint and AGPLv3 licensing considerations compared to Garage's lightweight Rust binary and minimal RAM requirements.
 
 ### 4. CoT Event Queue and Local Processing
-- **Decision**: For docker-compose mode, route CoT events directly to the database and internal WebSockets / EventEmitters rather than pushing through AWS SQS. In `api/common/etl-events.ts`, guard the queue publication logic when `CLOUDTAK_Mode=docker-compose`.
+- **Decision**: For docker-compose mode, route CoT events directly to the database and internal WebSockets / EventEmitters rather than pushing through AWS SQS. In `cloudtak/api/common/etl-events.ts`, guard the queue publication logic when `CLOUDTAK_Mode=docker-compose`.
 - **Alternatives considered**:
   - *RabbitMQ / Redis queue*: Adds unnecessary container operational complexity when PostgreSQL and in-memory pub/sub handle expected tactical unit loads.
 
@@ -51,6 +51,19 @@ TISCK adapts this codebase into an offline-first, self-contained deployment suit
 - **Decision**: Serve PMTiles basemaps from the local Garage bucket via the existing `tasks/pmtiles` service. Web frontend assets (fonts, icons) are bundled directly in the Vite application build rather than referenced from external CDNs.
 - **Alternatives considered**:
   - *External WMS/XYZ tile services*: Incompatible with air-gapped and austere tactical deployments.
+
+### 6. Network Interface & Port Binding Matrix
+- **Decision**: Differentiate network interface bindings between public ingress services and internal administrative/storage backends:
+  - **Public Ingress Services (`0.0.0.0`)**: Services accessed directly by tactical client devices (ATAK Android, WinTAK, browser operators) over the tactical LAN/Wi-Fi bind to `0.0.0.0`:
+    - `api`: `0.0.0.0:5000:5000` (Web UI & REST API)
+    - `tiles`: `0.0.0.0:5002:5002` (PMTiles vector/raster map server)
+    - `media`: `0.0.0.0:8554:8554` (RTSP), `0.0.0.0:8889:8889` (WebRTC), `0.0.0.0:1935:1935` (RTMP)
+  - **Internal & Administrative Services (`127.0.0.1` or Internal Network Only)**: Services handling raw database, object store, or administrative operations bind to `127.0.0.1` so host operators can use CLI tools while blocking unauthorized LAN access:
+    - `postgis`: `127.0.0.1:5432:5432` (PostgreSQL/PostGIS)
+    - `store`: `127.0.0.1:3903:3903` (Garage Admin API), `127.0.0.1:3900:3900` (Garage S3 API; all client asset/tile access is proxied through API & Tiles services)
+- **Alternatives considered**:
+  - *Binding everything to 0.0.0.0*: Unnecessarily exposes raw database and administrative endpoints to all devices on the tactical network.
+  - *Binding everything to 127.0.0.1*: Prevents tactical field clients (ATAK devices) on the local Wi-Fi/mesh LAN from reaching API and video feeds without a complex reverse proxy setup.
 
 ## Risks / Trade-offs
 

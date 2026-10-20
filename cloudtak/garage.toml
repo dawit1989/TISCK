@@ -1,0 +1,24 @@
+# ==============================================================================
+# Garage S3 Configuration - Local Tactical Object Store
+# ==============================================================================
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+replication_factor = 1
+
+rpc_bind_addr = "0.0.0.0:3901"
+rpc_secret = "b4c73f91d8a2054e76f1839210c4a89eb4c73f91d8a2054e76f1839210c4a89e"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "0.0.0.0:3900"
+root_domain = ".s3.garage.internal"
+
+[s3_web]
+bind_addr = "0.0.0.0:3902"
+root_domain = ".web.garage.internal"
+
+[admin]
+api_bind_addr = "0.0.0.0:3903"
+admin_token = "e819ac29d4b8e21a50c82f91b7d3410fe819ac29d4b8e21a50c82f91b7d3410f"

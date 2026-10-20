@@ -1,0 +1,795 @@
+# Fork delta: how TAK-NZ differs from upstream in `api/`, `app/` and `tasks/`
+
+This document explains **why** each TAK-NZ change to the synced application code
+exists. That rationale is the reason this file is worth keeping: it is the one
+thing git cannot reconstruct for you.
+
+## What is authoritative, and what is not
+
+**The file inventory is not maintained here.** It is derived from git on demand,
+so it can never be stale:
+
+```bash
+# every file where TAK-NZ differs from the synced upstream tree
+git diff --numstat vendor/upstream...HEAD -- api/ app/ tasks/
+
+# the full diff for one area
+git diff vendor/upstream...HEAD -- api/stateless/routes/login.ts
+```
+
+> **Layout change at v13.102.0.** Upstream moved the web frontend from `api/web/`
+> to a root-level `app/`, and `api/Dockerfile` to a root `Dockerfile` (the image
+> now builds `api/` and `app/` side by side). TAK-NZ follows: `scripts/sync-upstream.sh`
+> vendors `app/` too, and the CDK docker asset, workflows and scripts build from the
+> repository root. Any `api/web/...` path in an older commit or README maps to
+> `app/...`. The root `Dockerfile` and `.dockerignore` are **not** vendored (they sit
+> outside `SYNC_PATHS`), so diff them against upstream's by hand on each sync.
+
+At v13.70.0 that was **98 code files** plus **113 logo/icon assets** under
+`app/public/logos/`. `vendor/upstream` tracks the synced upstream tree; the
+version currently synced is in [`.upstream-version`](../../.upstream-version).
+
+**This document is the rationale layer on top of that diff.** It is grouped by
+concern rather than by file, because most changes span several files, and it is
+keyed by the paths that exist *today*. When you move or rename something, update
+the paths here.
+
+> ### Why there are no `.patch` files any more
+>
+> Until v13.70.0 this directory also held 45 `.patch` files. They were deleted,
+> and the reasoning is worth recording so nobody recreates them.
+>
+> They stopped being applicable long before they were deleted. Upstream syncs are
+> a real 3-way merge via the `vendor/upstream` branch, so TAK-NZ changes are
+> carried forward by git and never need reinstating — see
+> [`docs/UPSTREAM-SYNC.md`](../UPSTREAM-SYNC.md). Their only remaining job was as
+> a reference while resolving merge conflicts.
+>
+> They failed even at that. Measured at v13.70.0, when they were removed:
+>
+> - **8 of 45** still matched the tree under `git apply --reverse --check`.
+> - **19 of 45** had *every* target path missing; 8 more were partly missing.
+>   Upstream's restructure moved `api/lib/` into `api/common/` and
+>   `api/stateless/lib/`, and `api/routes/` into `api/stateless/routes/`. Git's
+>   merge followed those renames automatically. The patch headers did not.
+>
+> So at the exact moment you would reach for one, it pointed at a path that no
+> longer existed — worse than nothing, because it looked authoritative.
+>
+> Earlier problems, recorded here because they explain why the model was wrong
+> rather than merely out of date:
+>
+> - `apply-patches.sh` applied patches **sequentially**, but they were
+>   **cumulative diffs from a shared baseline**. Those two models contradict each
+>   other for any file touched by more than one patch, and 19 of 57 files were.
+>   Running the script against its own baseline died at patch 031, because 030 had
+>   already added those lines. Nothing in the repo ever invoked the script, and it
+>   has been removed.
+> - They were **incomplete as a recovery mechanism**: the fork modified 83
+>   upstream files and the patches covered 57. The 26 with no patch included the
+>   OIDC test suite, `ConfigLogin.vue`, `SettingsCallsign.vue`, `lib/style.ts` and
+>   `lib/logos.ts`. Reinstating from patches alone would have silently dropped all
+>   of them — the same class of failure that lost TAK certificate provisioning
+>   during the v13 port.
+>
+> The deleted files remain in git history if you ever need one.
+
+---
+
+## Authentication and identity
+
+The largest single area. TAK-NZ replaces upstream's authentication with an in-app
+OIDC flow against Authentik, and provisions TAK certificates as part of login.
+
+### In-app OIDC login
+
+`api/stateless/routes/login.ts`, `api/stateless/lib/oidc.ts`,
+`api/common/auth.ts`, `api/stateless/routes/server.ts`, `api/common/types.ts`,
+`app/src/components/Login.vue`, `app/src/stores/app.ts`
+
+An Authorization Code flow run by the application itself. `oidcParser()`,
+`isOidcEnabled()` and `isOidcForced()` live in `api/common/auth.ts`;
+`GET /server/oidc` exposes `oidc_enabled` / `oidc_forced` publicly so the login
+page can decide what to render, backed by `oidc_enabled` on `ServerResponse`.
+
+**The user is identified by `preferred_username`, falling back to `email`.**
+`Profile.username` (the CloudTAK primary key for a user) used to be populated
+unconditionally from the userinfo `email` claim, which both assumed every
+Authentik account has an email attribute and assumed CloudTAK's own record key
+should be that email rather than the Authentik `username`. Neither holds once
+Authentik usernames diverge from email (some are not email-shaped, some accounts
+have no email at all). `preferred_username` is used as-is if present (no
+lowercasing — Authentik usernames are a case-sensitive unique field, so
+lowercasing risks merging two distinct accounts), falling back to a lowercased
+`email` only if `preferred_username` is absent. The callback still 400s if
+userinfo returns neither claim.
+
+This replaced an earlier ALB-based design where the load balancer performed the
+OIDC handshake and injected JWT headers. Two consequences of that move are easy
+to misread as unnecessary:
+
+- - The OIDC callback issues its session through upstream's `issueSession()`
+  (`api/stateless/lib/user/session.ts`), so an SSO login gets the same token pair as
+  `POST /login` - including the single-use refresh token, which rides in the fragment
+  payload and is persisted by `applySession()`. Upstream's DB-driven `oidc::*`
+  settings (and their defaults) are deliberately not carried; SSO is env-driven.
+- `Login.vue` reads the session from the `/login#sso=<payload>` URL **fragment**,
+  not a query string, deliberately — a fragment stays out of server access logs
+  and browser history.
+- `getUsername()` / `storedUsername` are populated at the very top of
+  `onMounted()`, before any login-consuming branch runs. They used to be set
+  afterwards, which meant `applySession()`'s stale-profile-wipe check always saw
+  `storedUsername=null` on a fresh SSO redirect. A browser previously used for one
+  Authentik account could then leak its cached profile and WebSocket state into a
+  different user's new session.
+
+`OIDC_FORCED` still allows system admins to log in locally via
+`/login?local=true`: the frontend skips the auto-redirect and shows the form, and
+the backend returns 403 for non-admins, which the frontend converts into an SSO
+redirect.
+
+See [`README-OIDC.md`](README-OIDC.md) and
+[`README-OIDC-FORCED.md`](README-OIDC-FORCED.md).
+
+### TAK certificate enrollment, and the concurrency lock
+
+`api/stateless/lib/authentik-provider.ts`, `api/stateless/routes/login.ts`
+
+`enrollUserCertificate(username, takServerUrl)` sets a random temporary password
+on the Authentik account, generates a TAK client certificate via
+`APIAuthPassword` + `Credentials.generate()`, then revokes the temp password in a
+`finally` block. The v13 port dropped certificate provisioning entirely, leaving
+every OIDC user with an empty `auth` — restoring it is why this exists.
+
+**The advisory lock is load-bearing.** Because the temporary password is set on
+the *shared* Authentik account, two concurrent logins for the same user can
+interleave: one request's password-set lands between the other's password-set and
+its TAK Server login, and that login fails with a stale-credential `400`/`405`.
+This was confirmed in production logs — a `499` aborted `/login/oidc` followed
+5.6s later by a `302`-completing one, same user. The set-password → TAK-login →
+revoke sequence is wrapped in `pg_advisory_xact_lock`, keyed on a hash of the
+username, so it serialises correctly across ECS tasks.
+
+**Certificate enrollment and attribute sync have separate `try`/`catch` blocks,
+deliberately.** They used to share one, so a cert-enrollment failure aborted the
+block before the callsign/group/role sync ran at all — the sync was never
+reached, let alone failed. Do not recombine them.
+
+**Both enrollment paths must resolve the real Authentik `username` before using
+it as the certificate CN/clientUid.** The M2M path
+(`enrollUserCertificateViaM2M`) now calls `findUserByEmailOrUsername()` up front,
+same as the temp-password fallback always has — it previously built the CSR
+`commonName` and `clientUid` directly from whatever identifier the OIDC callback
+passed in (the `preferred_username`/`email` claim), which is not guaranteed to
+equal the Authentik `username` field. Without the lookup, a person's certificate
+subject would differ depending on which of the two enrollment paths happened to
+succeed for them.
+
+See [`README-CERT-ENROLLMENT-RACE.md`](README-CERT-ENROLLMENT-RACE.md).
+
+### Authentik attribute sync
+
+`api/stateless/routes/login.ts`, `api/stateless/lib/authentik-provider.ts`
+
+Attribute sync is unconditional on first login (`profile.created ===
+profile.updated`) so the "Welcome" wizard is suppressed for SSO users; later
+logins respect `SYNC_AUTHENTIK_ATTRIBUTES_ON_LOGIN`.
+
+TAK attributes (`tak::callsign`, `tak::remarks`, `tak::group`, `tak::role`) are
+written via `ProfileConfig.commit()`. They were previously passed to
+`Profile.commit()`, which silently dropped them because they are not columns on
+the `profile` table.
+
+`login()` returns `tak_role` from `attributes.takRole`.
+
+**`tak_group`/`tak_role` are validated against the `TAKGroup`/`TAKRole` enums
+before they leave `login()`, not passed through verbatim.** Authentik
+attributes (`takColor`, `takRole`) are admin-editable free text with no
+enforcement that they match CloudTAK's enum values. An invalid value used to
+flow straight through into `ProfileConfig` on every login — `tak_group`/
+`tak_role` are stored as free text, so the write always succeeded — and broke
+that user's account: `GET /api/profile`'s response schema validates both
+fields against the enum, so once a bad value was stored every subsequent
+profile fetch failed with a 400, and the map (which depends on a successful
+profile fetch during boot) could never load for that user. This happened in
+practice from an externally-set `takColor` attribute of the literal string
+`"None"`. `asTakGroup()`/`asTakRole()` (exported for the unit tests in
+`api/test/authentik-provider.test.ts`) now drop an attribute that isn't a
+recognised enum value and log the rejection, rather than writing it — `login.ts`'s
+existing "only set if truthy" logic then leaves any previously-synced valid
+value untouched instead of overwriting it with garbage.
+
+**On the callsign suffix:** `login()` used to append `" (Web)"` to
+`attributes.takCallsign`. That was **removed at v13.70.0** to match upstream. The
+`" (Web)"` suffix is deliberately *kept* on the certificate `clientUid`, which is
+a different identifier and prevents a browser session's certificate colliding
+with the same person's device certificate.
+
+### Authentik service accounts and LDAP
+
+`api/stateless/lib/authentik-provider.ts`, `api/stateless/routes/ldap.ts`,
+`api/stateless/routes/connection.ts`, `api/stateless/routes/agency.ts`,
+`app/src/components/ETL/Connection/AgencyBadge.vue`
+
+- `deleteMachineUser()` deletes safely behind a `machineUser: true` guard.
+- All three LDAP routes fall through to Authentik when CoTAK is not configured.
+- On-demand Authentik profile ID lookup when `profile.id` is null.
+- Agency changes on a connection are restricted to system admins.
+- `AgencyResponse` gains an optional `description` field.
+
+### Certificate lifecycle
+
+`api/stateless/lib/cert-health.ts`, `api/stateless/routes/connection.ts`,
+`api/stateless/routes/connection-layer.ts`
+
+`needsCertRenewal()` reports missing, invalid, or expiring-within-N-days.
+Connection delete revokes the TAK certificate and deletes the Authentik service
+account. `POST /connection/:id/cert/renew` and `GET /layer/:id/health` expose
+renewal and health. Renewal authenticates by password rather than by the
+certificate being replaced, which may already be revoked.
+
+See [`README-CERT-RENEWAL.md`](README-CERT-RENEWAL.md).
+
+### Auth-failure logout
+
+`app/src/utils/events.ts`, `app/src/stores/map.ts`,
+`app/src/workers/atlas.ts`, `app/src/stores/app.ts`
+
+A `Session_Logout` event redirects to `/api/logout` from the main thread on
+auth or connection error. `appStore.logout()` also redirects there to expire
+cookies.
+
+See [`README-AUTO-LOGOUT.md`](README-AUTO-LOGOUT.md).
+
+---
+
+## Configuration and deployment
+
+### Server configuration and admin provisioning
+
+`api/common/config.ts`, `Dockerfile`, `api/nginx.conf.js`
+
+The root `Dockerfile` is upstream's with one change: `npm ci` instead of
+`npm install` for both `api/` and `app/`, so a commit always builds against its
+committed lockfiles (an `npm install` once floated maplibre-gl to 6.4.1 and broke
+vector hillshading with no commit of ours to blame).
+
+`CLOUDTAK_Server_*` environment seeding, `MediaSecret` / DynamoDB / VPC config
+fields, and admin profile provisioning. Also `tileOriginHostnames`, parsed from
+`CLOUDTAK_TILE_ORIGINS`.
+
+`api/nginx.conf.js` generates the Content-Security-Policy header, including
+`frame-ancestors` and the embedding allowlist, and injects the trusted tile CDN
+origins into `connect-src` / `img-src` at container start.
+
+The `large_client_header_buffers` increase was **removed** once OIDC moved
+in-app — it existed only for large ALB-injected OIDC cookies.
+
+See [`README-ADMIN-ENV-VARS.md`](README-ADMIN-ENV-VARS.md).
+
+### Sibling-stack export names (webhooks and inbound email)
+
+`api/stateless/lib/aws/lambda.ts` (`Lambda.siblingExport`),
+`api/test/lambda-sibling-export.test.ts`, `api/test/connection-layer-email.srv.test.ts`,
+`cdk/lib/constructs/mail.ts`, `cdk/lib/constructs/webhooks.ts`
+
+Each layer's CloudFormation stack imports values exported by the stack that owns
+webhooks and inbound email (`ApiId`, invoke role, SSM layer prefix). Upstream
+derives the export name with
+`config.StackName.replace(/^tak-cloudtak-/, 'tak-cloudtak-webhooks-')`.
+TAK-NZ's stack is `TAK-<env>-CloudTAK`, which that lowercase prefix never matches,
+so the replace was a no-op and the import named an export nothing publishes
+(`TAK-Dev-CloudTAK-api`): **layer stacks with webhooks or email enabled could not be
+created**. This affected the webhook imports too, not just mail.
+
+`Lambda.siblingExport(StackName, 'webhooks' | 'mail', suffix)` keeps upstream's
+derivation for `tak-cloudtak-*` names and otherwise returns
+`<StackName>-<sibling>-<suffix>`, which is what the CDK exports:
+`TAK-<Env>-CloudTAK-webhooks-api`, `-webhooks-role`, `-mail-layer-prefix`.
+The email srv test now expects `test-mail-layer-prefix`.
+
+**On sync:** re-apply if `git diff vendor/upstream...HEAD -- api/stateless/lib/aws/lambda.ts`
+shows the five `importValue(...)` calls back in the `.replace(...)` form.
+
+### Inbound email infrastructure (CDK only)
+
+`cdk/lib/constructs/mail.ts`, `cdk/lib/lambda/mail-router.cjs`,
+`cdk/lib/constructs/cloudtak-api.ts`, `cdk/lib/cloudtak-stack.ts`
+
+Port of upstream `cloudformation/mail.template.js` (v13.102.4): SES Mail Manager
+ingress point, rule set, archive and traffic policy, a mail bucket, the router
+Lambda and its alarms, plus the `MAIL_DOMAIN` env var, the API task role's SSM
+statement and the ETL role's `s3:GetObject` on the bucket. The router code is a
+verbatim copy of upstream `cloudformation/lib/mail-lambda.cjs`; **diff it against
+upstream on each sync**. Differences from upstream are all naming: the router may
+invoke `TAK-<Env>-CloudTAK-layer-*` (not `tak-cloudtak-<env>-layer-*`), the layer
+prefix is `/TAK-<Env>-CloudTAK/mail/layer/`, and the ETL grant is attached to
+`TAK-<Env>-CloudTAK-etl` from the stack. It creates DNS records
+`MX mail.<hostname>.<zone>` and `TXT _dmarc.mail.<hostname>.<zone>`. See
+[`../EMAIL.md`](../EMAIL.md) for the flow and security notes (the ingress point is
+a public, OPEN SMTP endpoint).
+
+### CloudTAK web plugins (WEB_PLUGINS)
+
+`app/package.json`, `app/package-lock.json`, `cdk/cdk.json`, `cdk/lib/utils/web-plugins.ts`,
+`cdk/lib/cloudtak-stack.ts`, `.github/workflows/demo-build.yml`,
+`.github/workflows/production-build.yml`
+
+The root `Dockerfile` already accepts a `WEB_PLUGINS` build arg and `api/bin/plugin.ts`
+(unchanged from upstream) clones each listed repository into `app/plugins/<name>` after
+`COPY app/` and before `npm run lint && npm run check && npm run build`. TAK-NZ only
+adds the plumbing to set that arg and the dependency the first plugin needs.
+
+- **`pdfjs-dist` 4.10.38 (exact pin) in `app/package.json` and the lockfile.** Required
+  by the `cloudtak-plugin-rubbersheet` plugin (TAK-NZ fork of
+  `AdventureSeeker423/cloudtak-plugin-rubbersheet`). `npm ci` runs before plugins are
+  cloned, so a plugin cannot add its own dependencies; they must already be in the app
+  lockfile. The lockfile diff is `pdfjs-dist` plus its optional `@napi-rs/canvas*`
+  packages only. **On sync:** if `app/package.json` or the lockfile conflicts, keep
+  upstream's, re-add `pdfjs-dist@4.10.38` with `npm install --save-exact`, and check
+  `git diff` shows no unrelated lockfile changes.
+- **`cloudtak.webPlugins` in `cdk/cdk.json`** (TAK-NZ only, per environment). `dev-test`
+  lists the rubbersheet fork and `cloudtak-plugin-weather`; `prod` is `""`. The stack resolves the effective value
+  as `--context WebPlugins` (or `webPlugins`), then the `WEB_PLUGINS` env var, then
+  `cdk.json`, validates it (https GitHub URLs only) and adds it to the main
+  `CloudTAKDockerAsset` build args only when non-empty, so images without plugins keep
+  the same asset hash.
+- **Build workflows.** `demo-build.yml` reads the `dev-test` value and
+  `production-build.yml` the `prod` value, validates it with the same regex, folds it
+  into the image tag hash only when non-empty and passes `--build-arg WEB_PLUGINS`
+  to the main image build. `demo-build.yml` also triggers on `cdk/cdk.json` changes.
+- **No change to `api/bin/plugin.ts` or the `Dockerfile`.** It clones the plugin's
+  default branch tip with `--depth 1`; there is no ref pinning.
+
+See [`../DEPLOYMENT_GUIDE.md`](../DEPLOYMENT_GUIDE.md#installing-cloudtak-plugins-web_plugins)
+for how to use it.
+
+Plugins that put controls at the bottom of the map share one convention so their bars do not cover each other (yield, minimize, selector dot). See [`PLUGIN-PANELS.md`](PLUGIN-PANELS.md).
+
+### Weather plugin relay (`/api/weather`)
+`api/stateless/routes/weather.ts`, `api/stateless/lib/weather/relay-*.ts`,
+`api/test/weather-relay-lib.test.ts`, `api/test/weather.srv.test.ts`, `api/test/weather-images.ts`,
+`api/test/fixtures/get_schema.json`, `cdk/cdk.json`, `cloudtak-config.env.example`,
+`scripts/set-weather-proxy-config.sh`
+
+New files only, except the schema fixture and the `cdk.json` edits (plus `cloudtak-config.env.example`
+and the docs). The relay serves `GET /api/weather/status`
+and `GET /api/weather/tile/:z/:x/:y.png` for the `cloudtak-plugin-weather` plugin and
+fetches tiles from the weather-proxy with a server-side key.
+
+- **Tile image type.** The relay serves PNG or WebP tiles. Rainbow `clouds` tiles are WebP, but
+  the weather-proxy labels every tile `image/png`, so the relay checks the image bytes (PNG or
+  WebP), sends the detected `Content-Type` (the route path keeps `.png`) and answers 502 for
+  anything else.
+- **Snapshots.** `relay-snapshot.ts` (new) asks the proxy's `GET /snapshot?layer=` for the newest
+  snapshot of each layer (Rainbow publishes `clouds` later than rain). `GET /api/weather/status`
+  keeps its five fields and adds `latest` (`{snapshot, source: 'rainbow' | 'computed'}` per layer,
+  omitted when the relay is disabled), `stepSeconds: 600` and `windowSeconds: 7200`. The lookup is
+  cached 30 s per layer, shared by concurrent callers, skipped while the upstream is paused, and
+  waits at most 2.5 s; any failure (older proxy answering 404, 400, 5xx, bad JSON, timeout) gives
+  `source: 'computed'` and the status still answers 200. The tile route accepts a snapshot from
+  `latest - 7200` up to any newer value: a newer one is served as the layer's latest, an older one
+  is `400 snapshot out of range`. The cache key holds the effective snapshot, so a client clock
+  that runs ahead of a lagging layer shares one cache entry and one upstream call.
+- **Cache policy.** A tile is immutable only when the request named its snapshot (a 10-digit
+  `snapshot` equal to the effective one, so not absent, not `latest`, not clamped to a lagging
+  layer) and the upstream `X-Weather-Snapshot` equals it (and the answer is not a fallback, error
+  or `no-store`): relay TTL 7200 s and `Cache-Control: private, max-age=3600`. A cache hit gives
+  `max-age=3600` only to a pinned request; an unpinned request on the same entry gets
+  `max-age=600`, and an entry filled by an unpinned request keeps a 600 s TTL. Without the header
+  (older proxy) or with a different value the TTL stays 600 s with `max-age=600`; fallback tiles are not cached at the relay and get
+  `max-age=30`. An upstream `400` is now answered as `400` (was `502`). The audit log line also
+  has `snapshot` and `immutable`. Upstream-owned files are untouched; the schema fixture does not
+  change because the new status fields are optional response fields.
+- **Schema fixture.** `api/test/fixtures/get_schema.json` gained the two weather keys,
+  because `schema.srv.test.ts` deep-equals it against `GET /api/schema`. **On sync:**
+  re-run that test with `UPDATE=1` and keep upstream's keys.
+- **Env vars.** `WEATHER_PROXY_URL`, `WEATHER_PROXY_KEY`, `WEATHER_RATE_LIMIT`, read from
+  the environment (S3 config file). There are no `FullConfig` keys, so `types.ts`,
+  `defaults.ts`, `config.ts` and `AdminConfig.vue` stay identical to upstream and cannot
+  conflict on sync.
+- **`cdk.json`.** `dev-test` `webPlugins` also lists
+  `https://github.com/TAK-NZ/cloudtak-plugin-weather.git`.
+- **Licence.** The plugin repo is AGPL-3.0-only because its `lib/host.ts` imports
+  `app/src/std.ts`.
+- **Upstream pressure.** The weather-proxy allows 600 requests per minute per client IP and
+  re-arms its counter TTL on every allowed hit. The relay caps upstream fetches at 500 per
+  minute per API task. When the proxy answers 429, or that cap is hit, the task stops calling
+  the proxy for 5 to 120 s (the proxy's `Retry-After`, default 30 s). In that time cache hits
+  are still served and cache misses get `429` with `Retry-After` and `Cache-Control: no-store`.
+  The pause is in memory and per process. `WEATHER_RATE_LIMIT` (per user) is unchanged.
+- **Session token in URLs and access logs.** The plugin loads tiles through MapLibre, which
+  cannot send an `Authorization` header, so tile URLs carry `?token=<session token>`. The
+  platform access log (`morgan 'combined'` in `@openaddresses/batch-schema`, which skips only
+  2xx and 3xx responses) writes the full URL of every other response, so a 401, 403, 429 or
+  502 tile response would log a valid session token. Other CloudTAK tile routes already work
+  this way. The upstream-owned logger is not edited. Instead `weather.ts` has a `/weather`
+  middleware that hands the access log a copy of `req.originalUrl` with `token=***` and keeps
+  the real URL in `res.locals.weatherUrl` for the handler (covered by `weather.srv.test.ts`
+  test 19). Tokens are session tokens, so short sessions limit the exposure of anything logged
+  elsewhere, for example by a proxy in front of the API. A tile loader that sends an
+  `Authorization` header would remove the query token.
+- **Operator script.** `scripts/set-weather-proxy-config.sh` (new file, TAK-NZ only; `scripts/**`
+  is not in the CDK image asset) writes the three variables into the live `cloudtak-config.env`
+  in the BaseInfra config bucket, with a local backup, and never prints the key.
+
+See [`../DEPLOYMENT_GUIDE.md`](../DEPLOYMENT_GUIDE.md#weather-plugin-cloudtak-plugin-weather)
+for setup.
+
+---
+
+## Basemaps, tiles and terrain
+
+### TileJSON, sprites and CSP
+
+`api/common/types.ts`, `api/stateless/routes/basemap.ts`,
+`api/stateless/lib/interface-basemap.ts`, `app/src/base/overlay-class.ts`,
+`app/src/stores/map.ts`
+
+Adds `sprite` / `glyphs` to the `TileJSON` schema and merges the `tilejson` blob
+into PMTiles and non-URL TileJSON responses. Upstream's `sprite` / `glyphs` are
+stripped to prevent CSP leakage.
+
+The LINZ topographic sprite is loaded **directly** from
+`basemaps.linz.govt.nz`, which serves `Access-Control-Allow-Origin: *`, rather
+than proxied through the API. The tile proxy is bypassed in the TileJSON endpoint
+when the basemap hostname is in the trusted set. An earlier design proxied the
+sprite through `GET /api/basemap/sprite/:name.json|.png` and registered sprites
+per overlay reactively; that caused timing races and was replaced by loading the
+sprite unconditionally in the map init style.
+
+`vector_layers` is emitted **only when actually known**. Upstream's
+`[{id:'out'}]` default is CloudTAK's ETL convention and is wrong for proxied LINZ
+tiles; there is no `vector_layers` column, so it always fired. v13.26.0 emitted
+none. Cosmetic — MapLibre warns and still renders — but the ~285 console errors
+masked a real hillshade bug.
+
+See [`README-SPRITE-DUPLICATE.md`](README-SPRITE-DUPLICATE.md).
+
+### Hillshade and terrain sources
+
+`api/stateless/lib/interface-basemap.ts`, `app/src/base/overlay-class.ts`
+
+`ensureTerrainSource()` and the `__terrain__` sentinel let a hillshade layer
+reference a raster-dem source that may not exist yet; `OverlayManager` re-attempts
+deferred hillshade layers when the source arrives, and
+`BasemapProtocol.isValidStyle()` accepts hillshade layers using either.
+
+**The source must be added by passing the TileJSON `url` to `addSource()`, not a
+spread TileJSON object.** MapLibre 6.4.1 rejects unknown properties
+(`tilejson`, `version`, `name`, `description`, `scheme`, `center`, `actions`), and
+`Style.addSource()` returns early when it does — so `__terrain__` never existed
+and relief shading silently vanished.
+
+Related: `initOverlays()` calls `this.updateBackground()` after
+`OverlayManager.appendLoaded(...)`, because `visibleBasemaps()` reads `loaded`,
+which was still empty when `addLayers()` ran — that was the missing ocean fill.
+
+`namespaceStyles()` in `overlay-class.ts` copies rather than mutates, so layer-id
+prefixing is idempotent. `replace()` used to mutate the caller's array, and
+`MenuBasemaps` passes `basemap.styles` straight from component state, which grew
+ids like `23-23-23-Background` on every re-selection.
+
+### Server-side elevation
+
+`api/stateless/lib/terrain.ts`, `api/stateless/lib/interface-basemap.ts`,
+`api/stateless/routes/search.ts`,
+`app/src/components/CloudTAK/Query/Elevation.vue`
+
+`Elevation.vue` used MapLibre's `queryTerrainElevation()`, which only returns a
+value once 3D terrain rendering is active — a GPU-heavy mode not otherwise needed
+for a one-off lookup, and reported to crash some hardware.
+
+`BasemapProtocol.tileBuffer()` fetches a single tile's bytes in-process by reusing
+each protocol's existing `_tile()` behind a minimal in-memory `Response` stand-in,
+so it works for any protocol with no per-protocol changes. `getElevation()`
+resolves the configured `map::terrain` basemap, computes the covering tile and
+pixel via `pointToTileFraction()`, decodes with `sharp`, and applies the Mapbox
+Terrain-RGB or Terrarium formula according to the basemap's `encoding`. Wired into
+`GET /search/reverse/:longitude/:latitude/elevation`, falling back to the
+client-supplied `elevation` param when no terrain basemap is configured.
+
+See [`README-SERVER-SIDE-ELEVATION.md`](README-SERVER-SIDE-ELEVATION.md).
+
+### PMTiles task
+
+`tasks/pmtiles/**`
+
+Elevation and profile route additions with their test suites, plus
+`tasks/pmtiles/src/lib/auth.ts`. Note the LINZ vector style JSON files in
+`LINZ_Vector_Map_Styles/` prefix every `fill-pattern`, `line-pattern` and
+`icon-image` with `linz-topographic:` to match the sprite id MapLibre assigns to
+non-default named sprites.
+
+---
+
+## Icons, sprites and styling
+
+`api/stateless/routes/icons.ts`, `api/stateless/lib/logos.ts`,
+`api/common/style.ts`, `app/src/stores/modules/icons.ts`,
+`app/public/logos/**`
+
+- An iconset with no spritesheet data returns an empty sprite rather than a 400.
+- The sprite-key regex handles icon filenames containing dots.
+- `GET /api/icon` sends `ETag` and `Cache-Control: public, max-age=3600` when
+  filtered to a single iconset, so browsers can 304 instead of re-downloading up
+  to 10 MB of base64 icon data after an IndexedDB clear. Unfiltered requests get
+  `no-store`.
+- Large raster icons are scaled to 32px max via canvas, so an oversized icon
+  cannot fill the screen.
+- 113 logo and app-icon assets are TAK.NZ branding.
+
+See [`README-EMPTY-ICONSET-FIX.md`](README-EMPTY-ICONSET-FIX.md) and
+[`README-SPRITE-ICON-DOTS.md`](README-SPRITE-ICON-DOTS.md).
+
+### ATAK icon set
+
+`app/src/stores/modules/menu.ts`,
+`app/src/components/CloudTAK/DrawTools.vue`,
+`app/src/components/CloudTAK/util/DrawOverlay.vue`,
+`app/src/components/CloudTAK/Inputs/{RangeInput,RangeRingsInput,GeoJSONInput}.vue`
+
+ATAK-CIV icons for the navigation menu (16 of 18) and drawing tools (12 of 13),
+supplied by two TAK-NZ-only modules under `app/src/base/` that upstream will
+never create, so they cannot conflict. Each consuming file changes in exactly two
+places — one import and one `.map()` — leaving upstream's arrays byte-identical.
+Selection and provenance are in `branding/atak-icons/`; attribution is in
+`NOTICE` at the repo root.
+
+`DrawOverlay.vue` binds the ATAK icons to upstream's Tabler import names so its
+template stays byte-identical. The sector icon's mask id is made unique per
+component instance, because the palette and this pane can both render it at once.
+
+---
+
+## Overlays and profile
+
+`api/common/control/profile-overlay.ts`, `api/stateless/routes/profile-overlays.ts`,
+`api/stateless/routes/profile.ts`, `api/stateless/lib/control/profile.ts`,
+`app/src/components/CloudTAK/Menu/MenuOverlays.vue`
+
+Upstream (v13.102) moved overlay rules into `ProfileOverlayControl`. A duplicate
+overlay POST now patches the existing overlay in place; TAK-NZ additionally
+**unhides** it unless the caller passes `visible` (`upsert()`, non-mission
+overlays), and `delete()` also deletes the overlay's associated iconset.
+`icon_rotation` boolean parsing in `ProfileControl.defaultUnits()` was inverted
+(`=== 'false'` where it should have been `=== 'true'`); upstream's test for the
+unset default still expects `true`, so that test fails - a known, pre-existing gap.
+
+Pinned-overlay stacking (Map Features on top, basemap on bottom) is now upstream's
+own (`OverlayManager.compareStack` / `isPinned` / `loadedAnchorOverlayFrom`); the
+TAK-NZ `byPosInternalLast`, `OverlayCard` component split and touch long-press
+handler were dropped in its favour. What `MenuOverlays.vue` still carries: the
+auto-provisioned hidden `raster-dem` terrain overlay is not listed as a card.
+
+See [`README-IDEMPOTENT-OVERLAY.md`](README-IDEMPOTENT-OVERLAY.md).
+
+---
+
+## Chat
+
+`api/stateful/lib/connection-web.ts`, `api/stateful/lib/connection-pool.ts`,
+`app/src/base/chatroom.ts`, `app/src/base/chatroom-chats.ts`,
+`app/src/components/CloudTAK/Menu/MenuChat.vue`,
+`app/src/components/CloudTAK/Notifications.vue`
+
+**Directed-chat routing is a security fix, not a tidy-up.** The plugin
+dest-routing block used to *replace* the UID-based `<marti><dest uid="..."/>` with
+a callsign-only dest. TAK Server resolves callsign destinations through a single
+global, non-unique `callsign -> subscription` map, and CloudTAK gives every new
+profile the same default callsign (`"CloudTAK User"`) — so a directed chat could
+reach the wrong user. It now uses `chat.addDest({ callsign })` to add the callsign
+dest *alongside* the UID dest. UID-based explicit brokering still wins for
+routing, and plugins reading `xmlDetail` still find a callsign.
+
+A bare `<dest callsign="...">` sibling under `<detail>` was also dropped. It had
+been added on the assumption that TAK Server strips `<marti>` before building
+`xmlDetail`; checking TAK Server's own source
+(`StreamingProtoBufHelper.cot2protoBuf()`, `takserver-plugins`) shows it extracts
+a fixed allowlist and passes everything else, `<marti>` included, through
+unmodified. The `addDest()` call alone suffices.
+
+Other fixes in this area:
+
+- `connection-pool.ts` includes `from.uid` in the WebSocket `chat` push echoed to
+  the sender. Without it the client's optimistic local echo was overwritten with
+  `sender_uid === undefined`, rendering your own message on the wrong side until
+  reload.
+- `Chatroom.deleteChats()` deletes the message ids from `db.chatroom_chats` after
+  the server delete succeeds. This gap exists upstream too but is invisible there,
+  because upstream's wipe-and-repopulate `refresh()` incidentally covers it.
+- `chatroom-chats.ts`'s `refresh()` indexes `items[0]`, the newest message, when
+  updating `chatroom.updated`. It used to take the last item, the oldest in the
+  page.
+- `MenuChat.vue` keys its local-DB subscription and server refresh off the
+  resolved chatroom name rather than the literal `'new'` URL segment. Every
+  "start chat" button routes via `/menu/chats/new?callsign=...`, so an existing
+  conversation opened that way showed empty.
+- `sendMessage()` sets a `skipNextRefresh` flag before navigating away from
+  `/new`, so the post-send refresh cannot race the TAK Server echo and roll back
+  optimistic state.
+- A debug `console.log(JSON.stringify(feat))` that logged full mission-chat
+  payloads, message text included, to server logs was removed.
+
+See [`README-CHAT-FUNCTIONALITY.md`](README-CHAT-FUNCTIONALITY.md),
+[`README-CHAT-ECHO-SENDER-UID.md`](README-CHAT-ECHO-SENDER-UID.md) and
+[`README-CHAT-DELETE-LOCAL-SYNC.md`](README-CHAT-DELETE-LOCAL-SYNC.md).
+
+---
+
+## WebSocket lifecycle and the login race
+
+`app/src/workers/atlas-connection.ts`, `app/src/workers/atlas.ts`,
+`app/src/workers/atlas-database.ts`, `app/src/workers/atlas-profile.ts`,
+`app/src/stores/map.ts`, `app/src/components/Login.vue`,
+`app/src/components/CloudTAK/Map.vue`
+
+Exponential-backoff reconnect, capped at 5 attempts over 1s → 10s, with
+auth-failure detection.
+
+**The mount/unmount guards in `mapStore` are not defensive padding.** `Login.vue`
+used to signal completion with `emit('login')`, which `App.vue` routed to the
+async `appStore.refreshLogin()` while discarding its promise, then navigated
+immediately. `refreshLogin()` sets `appStore.loading = true` synchronously, and
+`App.vue` gates `<router-view>` on that flag — so any interleaving where the route
+reached `/` while it was still set tore down the just-mounted `Map.vue` and
+remounted it a tick later, running `mapStore.destroy()` and `mapStore.init()`
+concurrently against the same singleton.
+
+That overlap is unrecoverable: `startWorker()` early-returns while `_rawWorker` is
+still set, so the new `init()` binds to a worker the teardown is about to
+`terminate()`, and Comlink RPCs against a terminated worker never settle. The
+result was a permanent loading spinner with no timeout anywhere in the chain.
+
+The fix has three parts, all of which need to stay together:
+
+1. `Login.vue` awaits `appStore.refreshLogin()` via `settleSession()` before
+   navigating, and bails out if the session did not verify. Auth state settles
+   while still on `/login`, where App.vue's gate is exempt, so `Map.vue` mounts
+   exactly once.
+2. `mapStore` gains **module-level** `destroyPromise` and `lifecycle` handles —
+   deliberately not state-resident, since `$reset()` would roll them back.
+   `destroy()` coalesces concurrent teardowns and bumps the counter; `init()`
+   waits for any in-flight teardown, then re-checks at each await whether it has
+   been superseded, returning `false` and disposing any orphaned MapLibre
+   instance. The graceful worker-shutdown RPC is bounded at 2s before
+   `terminate()`, because `init()` waits on it.
+3. `Map.vue` honours `init()`'s boolean return and stops wiring up a superseded
+   mount.
+
+See [`README-WEBSOCKET-RECONNECTION.md`](README-WEBSOCKET-RECONNECTION.md) and
+[`README-OIDC-WEBSOCKET-FIXES.md`](README-OIDC-WEBSOCKET-FIXES.md).
+
+---
+
+## Self-location rendering
+
+`app/src/base/cot.ts`, `app/src/workers/atlas-profile.ts`
+
+`COT.styleProperties()` applied group-based `marker-color` / `icon-opacity` to
+every Point feature carrying a `group`, including the user's own self-location.
+Because `marker-opacity` was never set alongside it, node-cot's `from_geojson()`
+defaulted alpha to ~50% — emitting a semi-transparent `<color argb>` that native
+ATAK and WinTAK never send for team members, and the suspected cause of team
+markers rendering faded or invisible on ATAK 5.7.
+
+`isSelf` is its own **top-level** branch, not an `else if`. An earlier attempt
+excluded self only from the first branch, so self with no pre-existing icon fell
+through to the generic fallback, got `properties.icon` set, and rendered a second
+icon on top of the GeolocateControl puck. The branch also explicitly `delete`s
+`marker-color`, `marker-opacity`, `icon-opacity` and `icon` on both the fresh
+properties and the long-lived `COT#_properties`, because `Object.assign` never
+clears keys a payload omits — so stale values self-heal on the next update.
+
+`COT.selfUid` is set in `AtlasProfile.uid()` rather than relying solely on
+`AtlasDatabase.init()`, closing a race where the first self-location update could
+fire before it was populated.
+
+---
+
+## Web compass heading
+
+`app/src/stores/device/{orientation,web-compass,heading,declination,heading-reference}.ts`
+(+ `*.spec.ts`), `app/src/stores/map.ts`, `app/src/lib/geolocate/main.ts` (comment only),
+`app/src/components/CloudTAK/GPSPanel/GPSPanel.vue`,
+`app/src/components/CloudTAK/Menu/MenuSettingsDisplay.vue`
+
+Chrome 151+ on Android added `DeviceOrientationEvent.requestPermission`. Upstream's
+web branch treated that as "this is iOS" and listened to the **relative**
+`deviceorientation` event (`absolute === false`, Android game rotation vector). Its yaw
+has an arbitrary reference that resets whenever the sensor restarts (page start and
+every resume), so the heading showed a round value such as 90 or 0, offset from the
+real one. Separately, `360 - alpha` is wrong when the phone is held upright (Euler
+ill-conditioning, up to 90°) and ignores `screen.orientation.angle`.
+
+- `web-compass.ts` holds the new web branch; `OrientationPermission.addListener()`
+  only delegates to it. It never shows a relative event as a compass: it accepts
+  `deviceorientationabsolute`, events with `absolute === true`, or numeric iOS
+  `webkitCompassHeading`, chosen by what the events carry, not by whether
+  `requestPermission` exists. It drops the first samples after resume
+  (`visibilitychange` / bfcache `pageshow`) and emits `null` with one warning if no
+  usable event arrives within 3 s. The native Capacitor branch is unchanged.
+- `heading.ts` computes the heading from the device axes (tilt and screen-angle
+  compensated) instead of `360 - alpha`.
+- **True north by default.** Android Chrome reports magnetic north, iOS
+  `webkitCompassHeading` is already true. `declination.ts` applies the World Magnetic
+  Model (`geomagnetism`, Apache-2.0, already a dependency) using
+  `mapStore.gpsCoordinates`; without a location the heading stays magnetic. The
+  "Heading Reference" setting (Settings > Display) switches to magnetic. It is stored in
+  `localStorage` (`heading-reference.ts`) so it needs no API or database change. The
+  puck cone and map rotation use the same value, so they change by the declination
+  (about 23° in Wellington).
+- `map.ts` passes the callback value through `finiteOrNull` and a location getter.
+- `GPSPanel.vue` labels a GPS course fallback `COG`, and with no heading at all shows
+  `--°` as a button that requests the orientation permission from the tap (needed
+  when Chrome moves the sensor permission to "ask").
+- `OrientationPermission.refreshStatus()` no longer reports `prompt` for Chromium just
+  because `requestPermission` exists.
+- **Not done:** the Android native Capgo plugin reports magnetic north; declination is
+  not applied on that path yet.
+
+Drop the `orientation.ts` / `web-compass.ts` / `heading.ts` part when upstream adopts
+an equivalent fix (reject relative events, choose the source by behaviour,
+tilt-compensated heading). The true-north setting and the `COG` label are TAK-NZ
+additions that would need to be proposed upstream separately.
+
+---
+
+## Terminology and UI
+
+`app/src/components/CloudTAK/MainMenuContents.vue`,
+`app/src/components/CloudTAK/util/{ChannelInfo,EmptyInfo,ShareToMission,Share,SelectFeats,SettingsCallsign,NotificationIcon}.vue`,
+`app/src/components/CloudTAK/Menu/{MenuContacts,MenuVideos,MenuSettings,MenuFilesRow}.vue`,
+`app/src/components/CloudTAK/Map.vue`,
+`app/src/components/PageFooter.vue`,
+`app/{index,admin,connection,docs,video}.html`, `app/vite.config.ts`
+
+- The Application Switcher dropdown is removed; logout redirects to
+  `/api/logout`.
+- Upstream's "Missions" are presented as "Data Syncs" where they face the user
+  (route paths, store/prop names and DB fields stay `mission`/`missions`), and
+  the `EmptyInfo` type check was corrected to match. Not yet applied
+  everywhere - some menu titles under `Menu/Mission/` still say "Mission".
+- The contacts badge count is fixed and a manual refresh added.
+- The video menu is hidden when no media server is configured.
+- Upstream's `.maplibregl-ctrl-scale` CSS overrides are removed to keep MapLibre's
+  default styling; only `margin: 0` is re-added, because dropping the whole block
+  also dropped the positioning.
+
+See [`README-HIDE-LOGIN-FORM.md`](README-HIDE-LOGIN-FORM.md).
+
+---
+
+## Tests
+
+`api/test/login-oidc.srv.test.ts`, `api/test/manifest.srv.test.ts`,
+`tasks/pmtiles/test/**`
+
+The OIDC login suite and the PMTiles elevation/profile suites are TAK-NZ
+additions. Note the OIDC suite was one of the files the old patch set did not
+cover at all.
+
+**Known gap:** nothing covers `AuthentikProvider.login()`'s `takCallsign` →
+`tak_callsign` mapping.
+
+---
+
+## Notes for future syncs
+
+1. **Regenerate `api/derived-types.d.ts`** after the new API is live, then commit
+   it on the sync branch before merging:
+   ```bash
+   cd api && npx openapi-typescript https://map.test.tak.nz/api/swagger --output derived-types.d.ts && cd ..
+   ```
+   It tends to be several versions stale between syncs. `tasks/events` no longer
+   has its own copy — upstream removed that file at v13.70.0.
+
+2. **Check for orphaned migrations** before upgrading an environment:
+   ```bash
+   MIGRATIONS_JOURNAL=<journal for the target version> node scripts/check-migrations.mjs
+   ```
+
+3. **Keep the paths in this document current.** It is keyed by real paths, and
+   upstream restructures directories — that is precisely what invalidated the
+   patch files it replaced. After a sync that moves files, re-run the `git diff`
+   at the top and fix any heading that no longer resolves.
