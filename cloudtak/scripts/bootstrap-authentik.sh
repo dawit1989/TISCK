@@ -49,7 +49,7 @@ done
 
 # 2. Ensure Custom Groups Scope Mapping Exists
 echo "Verifying custom 'groups' OAuth2 scope property mapping..."
-MAPPING_LIST=$(curl -s -k "${HEADERS[@]}" "${AUTHENTIK_URL}/api/v3/property-mappings/provider/oauth2/?search=groups")
+MAPPING_LIST=$(curl -s -k "${HEADERS[@]}" "${AUTHENTIK_URL}/api/v3/propertymappings/provider/scope/?search=groups")
 MAPPING_PK=""
 
 if echo "$MAPPING_LIST" | grep -q "\"name\":\"TISCK Groups Scope\""; then
@@ -64,11 +64,15 @@ else
             "description": "Maps TISCK tactical groups and roles into the OIDC groups claim",
             "expression": "return [group.name for group in request.user.ak_groups.all()]"
         }' \
-        "${AUTHENTIK_URL}/api/v3/property-mappings/provider/oauth2/")
+        "${AUTHENTIK_URL}/api/v3/propertymappings/provider/scope/")
     MAPPING_PK=$(echo "$MAPPING_RESP" | grep -o '"pk":"[^"]*"' | head -n 1 | cut -d'"' -f4 || true)
 fi
 
-# 3. Create or Update CloudTAK OAuth2 Provider
+# 3. Resolve Authorization & Invalidation Flows
+AUTH_FLOW_PK=$(curl -s -k "${HEADERS[@]}" "${AUTHENTIK_URL}/api/v3/flows/instances/?slug=default-provider-authorization-implicit-consent" | grep -o '"pk":"[^"]*"' | head -n 1 | cut -d'"' -f4 || true)
+INVAL_FLOW_PK=$(curl -s -k "${HEADERS[@]}" "${AUTHENTIK_URL}/api/v3/flows/instances/?slug=default-provider-invalidation-flow" | grep -o '"pk":"[^"]*"' | head -n 1 | cut -d'"' -f4 || true)
+
+# 4. Create or Update CloudTAK OAuth2 Provider
 echo "Configuring CloudTAK OAuth2/OIDC Provider..."
 PROVIDERS=$(curl -s -k "${HEADERS[@]}" "${AUTHENTIK_URL}/api/v3/providers/oauth2/?search=${CLIENT_ID}")
 PROVIDER_PK=""
@@ -84,16 +88,19 @@ else
             \"client_type\": \"confidential\",
             \"client_id\": \"${CLIENT_ID}\",
             \"client_secret\": \"${CLIENT_SECRET}\",
-            \"redirect_uris\": \"${REDIRECT_URI}\",
+            \"redirect_uris\": [{\"matching_mode\":\"strict\",\"url\":\"${REDIRECT_URI}\"}],
             \"sub_mode\": \"user_username\",
             \"include_claims_in_id_token\": true,
-            \"issuer_mode\": \"per_provider\"
+            \"issuer_mode\": \"per_provider\",
+            \"property_mappings\": [\"${MAPPING_PK}\"],
+            \"authorization_flow\": \"${AUTH_FLOW_PK}\",
+            \"invalidation_flow\": \"${INVAL_FLOW_PK}\"
         }" \
         "${AUTHENTIK_URL}/api/v3/providers/oauth2/")
     PROVIDER_PK=$(echo "$PROVIDER_RESP" | grep -o '"pk":[0-9]*' | head -n 1 | cut -d':' -f2 || true)
 fi
 
-# 4. Attach Provider to CloudTAK Application
+# 5. Attach Provider to CloudTAK Application
 echo "Configuring CloudTAK Application..."
 APPS=$(curl -s -k "${HEADERS[@]}" "${AUTHENTIK_URL}/api/v3/core/applications/?search=cloudtak")
 

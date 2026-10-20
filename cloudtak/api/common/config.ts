@@ -166,12 +166,18 @@ export default class Config {
         if (process.env.CLOUDTAK_Mode === 'docker-compose') {
             process.env.StackName = process.env.StackName || 'tisck';
 
-            if (!process.env.SigningSecret || process.env.SigningSecret === 'coe-wildland-fire' || process.env.SigningSecret === 'CHANGE_ME_TO_A_SECURE_RANDOM_STRING_MIN_32_CHARS' || process.env.SigningSecret.length < 32) {
+            if (process.env.SigningSecret === 'coe-wildland-fire' || process.env.SigningSecret === 'CHANGE_ME_TO_A_SECURE_RANDOM_STRING_MIN_32_CHARS') {
+                throw new Error('SigningSecret environment variable cannot use insecure default or placeholder in docker-compose mode');
+            }
+
+            if (!process.env.SigningSecret) {
                 if (process.env.NODE_ENV === 'test' || process.env.StackName === 'test') {
-                    SigningSecret = process.env.SigningSecret || 'tisck-test-signing-secret-random-32chars';
+                    SigningSecret = 'tisck-test-signing-secret-random-32chars';
                 } else {
                     throw new Error('SigningSecret environment variable must be set to a secure random string (minimum 32 characters) in docker-compose mode');
                 }
+            } else if (process.env.SigningSecret.length < 32) {
+                throw new Error('SigningSecret environment variable must be at least 32 characters in docker-compose mode');
             } else {
                 SigningSecret = process.env.SigningSecret;
             }
@@ -184,7 +190,7 @@ export default class Config {
         } else if (!process.env.StackName || process.env.StackName === 'test') {
             process.env.StackName = 'test';
 
-            SigningSecret = process.env.SigningSecret || 'coe-wildland-fire';
+            SigningSecret = process.env.SigningSecret || 'tisck-test-signing-secret-random-32chars';
             Bucket = process.env.ASSET_BUCKET;
             API_URL = process.env.API_URL || 'http://localhost:5001';
             PMTILES_URL = process.env.PMTILES_URL || 'http://localhost:5001';

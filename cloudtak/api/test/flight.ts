@@ -365,10 +365,11 @@ export default class Flight {
                 },
             });
 
+            const secret = this.config?.SigningSecret || process.env.SigningSecret || 'tisck-test-signing-secret-random-32chars';
             if (opts.admin) {
-                this.token[username] = jwt.sign({ access: 'admin', email: username + '@example.com' }, 'coe-wildland-fire');
+                this.token[username] = jwt.sign({ access: 'admin', email: username + '@example.com' }, secret);
             } else {
-                this.token[username] = jwt.sign({ access: 'user', email: username + '@example.com' }, 'coe-wildland-fire');
+                this.token[username] = jwt.sign({ access: 'user', email: username + '@example.com' }, secret);
             }
         });
     }

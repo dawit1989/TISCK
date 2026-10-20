@@ -22,9 +22,21 @@ test('AuthentikProvider: resolves direct token from AUTHENTIK_API_TOKEN without 
         assert.equal(authResult.token, 'test-direct-token-offline-12345');
         assert.ok(authResult.expires > new Date());
     } finally {
-        if (origUrl !== undefined) process.env.AUTHENTIK_URL = origUrl; else delete process.env.AUTHENTIK_URL;
-        if (origArn !== undefined) process.env.AUTHENTIK_API_TOKEN_SECRET_ARN = origArn; else delete process.env.AUTHENTIK_API_TOKEN_SECRET_ARN;
-        if (origToken !== undefined) process.env.AUTHENTIK_API_TOKEN = origToken; else delete process.env.AUTHENTIK_API_TOKEN;
+        if (origUrl !== undefined) {
+            process.env.AUTHENTIK_URL = origUrl;
+        } else {
+            delete process.env.AUTHENTIK_URL;
+        }
+        if (origArn !== undefined) {
+            process.env.AUTHENTIK_API_TOKEN_SECRET_ARN = origArn;
+        } else {
+            delete process.env.AUTHENTIK_API_TOKEN_SECRET_ARN;
+        }
+        if (origToken !== undefined) {
+            process.env.AUTHENTIK_API_TOKEN = origToken;
+        } else {
+            delete process.env.AUTHENTIK_API_TOKEN;
+        }
     }
 });
 
@@ -44,8 +56,20 @@ test('AuthentikProvider: throws 500 when neither direct token nor ARN configured
             /AUTHENTIK_API_TOKEN or AUTHENTIK_API_TOKEN_SECRET_ARN not configured/,
         );
     } finally {
-        if (origUrl !== undefined) process.env.AUTHENTIK_URL = origUrl; else delete process.env.AUTHENTIK_URL;
-        if (origArn !== undefined) process.env.AUTHENTIK_API_TOKEN_SECRET_ARN = origArn; else delete process.env.AUTHENTIK_API_TOKEN_SECRET_ARN;
-        if (origToken !== undefined) process.env.AUTHENTIK_API_TOKEN = origToken; else delete process.env.AUTHENTIK_API_TOKEN;
+        if (origUrl !== undefined) {
+            process.env.AUTHENTIK_URL = origUrl;
+        } else {
+            delete process.env.AUTHENTIK_URL;
+        }
+        if (origArn !== undefined) {
+            process.env.AUTHENTIK_API_TOKEN_SECRET_ARN = origArn;
+        } else {
+            delete process.env.AUTHENTIK_API_TOKEN_SECRET_ARN;
+        }
+        if (origToken !== undefined) {
+            process.env.AUTHENTIK_API_TOKEN = origToken;
+        } else {
+            delete process.env.AUTHENTIK_API_TOKEN;
+        }
     }
 });

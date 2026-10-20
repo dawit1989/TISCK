@@ -141,6 +141,7 @@ docker compose up -d
 ## Identity Operations & Hardening
 
 Detailed operational guides for the identity stack are available under [`docs/identity/`](docs/identity/):
+- [**OIDC Security Hardening & Canonical Issuer Guide**](docs/identity/oidc-security-hardening.md): ID token cryptographic validation (RFC 7519), nonce verification, dual-homed Docker backchannel routing (`resolveInternalUrl`), and test suites.
 - [**Disaster Recovery & Break-Glass Runbook**](docs/identity/disaster-recovery.md): Local emergency logins, CLI password resets, and automated backup/restore (`backup-identity.sh` / `.ps1`).
 - [**Offline Image Bundle Guide**](docs/identity/offline-image-bundle.md): Pre-caching pinned container images (`authentik:2024.12.0`, `redis:7.4-alpine`) for air-gapped transport.
 - [**LDAP Outpost Setup Guide**](docs/identity/ldap-outpost-guide.md): Optional internal-only directory bridge for legacy TAK integrations.

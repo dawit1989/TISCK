@@ -9,9 +9,9 @@ import Schema from '@openaddresses/batch-schema';
 import { Type } from '@sinclair/typebox';
 import Provider from '../lib/provider.js';
 import ProfileControl from '../lib/control/profile.js';
-import { X509Certificate } from 'crypto';
+import { X509Certificate, randomBytes } from 'crypto';
 import { TAKAPI, APIAuthCertificate } from '@tak-ps/node-tak';
-import { discovery, authorizationUrl, exchangeCode, userinfo } from '../lib/oidc.js';
+import { discovery, authorizationUrl, exchangeCode, userinfo, validateIdToken } from '../lib/oidc.js';
 import type { OIDCConfig } from '../lib/oidc.js';
 import { sql } from 'drizzle-orm';
 import { LoginResponse, issueSession, refreshSession } from '../lib/user/session.js';
@@ -54,6 +54,8 @@ function oidcConfig(config: Config): OIDCConfig {
         secret,
         redirect: process.env.OIDC_REDIRECT_URI || `${config.API_URL}/api/login/oidc/callback`,
         scopes: process.env.OIDC_SCOPES || 'openid profile email groups',
+        authorization_url: process.env.OIDC_AUTHORIZATION_URL || (process.env.AUTHENTIK_HOST ? `${process.env.AUTHENTIK_HOST.replace(/\/$/, '')}/application/o/authorize/` : undefined),
+        issuer: process.env.OIDC_ISSUER || (process.env.AUTHENTIK_HOST && process.env.AUTHENTIK_APP_SLUG ? `${process.env.AUTHENTIK_HOST.replace(/\/$/, '')}/application/o/${process.env.AUTHENTIK_APP_SLUG}/` : undefined),
     };
 }
 
@@ -184,14 +186,16 @@ export default async function router(schema: Schema, config: ConfigStateless) {
     }, async (req, res) => {
         try {
             const oidc = oidcConfig(config);
-            const disc = await discovery(oidc.discovery);
+            const disc = await discovery(oidc.discovery, oidc.issuer);
 
+            const nonce = randomBytes(16).toString('hex');
             const state = jwt.sign({
                 t: 'oidc',
+                n: nonce,
                 ...(req.query.redirect ? { r: req.query.redirect } : {}),
             }, config.SigningSecret, { expiresIn: '10m' });
 
-            res.redirect(authorizationUrl(disc, oidc, state));
+            res.redirect(authorizationUrl(disc, oidc, state, nonce));
         } catch (err) {
             console.error('OIDC login error:', err);
             const message = err instanceof Error ? err.message : 'SSO Login Failed';
@@ -230,18 +234,21 @@ export default async function router(schema: Schema, config: ConfigStateless) {
                 throw new Err(400, null, 'OIDC Callback is missing code or state');
             }
 
-            let state: { t?: string; r?: string };
+            let state: { t?: string; r?: string; n?: string };
             try {
-                state = jwt.verify(req.query.state, config.SigningSecret) as { t?: string; r?: string };
+                state = jwt.verify(req.query.state, config.SigningSecret) as { t?: string; r?: string; n?: string };
             } catch (err) {
                 throw new Err(401, err instanceof Error ? err : null, 'Invalid OIDC State - Please try logging in again');
             }
             if (state.t !== 'oidc') throw new Err(401, null, 'Invalid OIDC State - Please try logging in again');
 
             const oidc = oidcConfig(config);
-            const disc = await discovery(oidc.discovery);
+            const disc = await discovery(oidc.discovery, oidc.issuer);
             const tokens = await exchangeCode(disc, oidc, req.query.code);
-            const claims = await userinfo(disc, tokens.access_token);
+            if (tokens.id_token) {
+                validateIdToken(tokens.id_token, disc, oidc, state.n);
+            }
+            const claims = await userinfo(disc, tokens.access_token, oidc.discovery, oidc.issuer);
 
             // Identify the user by `preferred_username` first - the OIDC-standard
             // claim for the name the IdP would use to log the user in - falling
@@ -499,8 +506,8 @@ export default async function router(schema: Schema, config: ConfigStateless) {
         description: 'Logout and redirect to the IdP end-session endpoint if OIDC is configured',
     }, async (req, res) => {
         try {
-            if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_APP_SLUG) {
-                const authentikBase = process.env.AUTHENTIK_URL.replace(/\/$/, '');
+            if ((process.env.AUTHENTIK_PUBLIC_URL || process.env.AUTHENTIK_HOST || process.env.AUTHENTIK_URL) && process.env.AUTHENTIK_APP_SLUG) {
+                const authentikBase = (process.env.AUTHENTIK_PUBLIC_URL || process.env.AUTHENTIK_HOST || process.env.AUTHENTIK_URL || '').replace(/\/$/, '');
                 return res.redirect(`${authentikBase}/application/o/${process.env.AUTHENTIK_APP_SLUG}/end-session/`);
             }
 

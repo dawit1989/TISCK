@@ -14,6 +14,11 @@ services:
         condition: service_started
     ports:
       - "0.0.0.0:${API_PORT:-5000}:5000"
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.identity
+        required: false
     environment:
       - CLOUDTAK_Mode=${CLOUDTAK_Mode:-docker-compose}
       - CLOUDTAK_Server_Mode=${CLOUDTAK_Server_Mode:-both}
@@ -37,16 +42,19 @@ services:
       # OIDC Authentication
       - OIDC_ENABLED=${OIDC_ENABLED:-true}
       - OIDC_FORCED=${OIDC_FORCED:-false}
-      - OIDC_DISCOVERY_URL=${OIDC_DISCOVERY_URL}
-      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
+      - OIDC_DISCOVERY_URL=${OIDC_DISCOVERY_URL:-http://identity-server:9000/application/o/cloudtak/.well-known/openid-configuration}
+      - OIDC_AUTHORIZATION_URL=${OIDC_AUTHORIZATION_URL:-http://localhost:9000/application/o/authorize/}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-cloudtak}
       - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}
       - OIDC_SCOPES=${OIDC_SCOPES:-openid profile email groups}
       - OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI:-http://localhost:5000/api/login/oidc/callback}
+      - OIDC_ISSUER=${OIDC_ISSUER:-http://localhost:9000/application/o/cloudtak/}
       - LOCAL_ONLY_ACCOUNTS=${LOCAL_ONLY_ACCOUNTS:-admin}
       # Authentik Integration
+      - AUTHENTIK_HOST=${AUTHENTIK_HOST:-http://localhost:9000}
       - AUTHENTIK_URL=${AUTHENTIK_URL:-http://identity-server:9000}
       - AUTHENTIK_APP_SLUG=${AUTHENTIK_APP_SLUG:-cloudtak}
-      - AUTHENTIK_API_TOKEN=${AUTHENTIK_API_TOKEN:-}
+      - AUTHENTIK_API_TOKEN=${AUTHENTIK_API_TOKEN}
       - SYNC_AUTHENTIK_ATTRIBUTES_ON_LOGIN=${SYNC_AUTHENTIK_ATTRIBUTES_ON_LOGIN:-true}
       # Tactical Group Names
       - CLOUDTAK_Config_group_Blue=${CLOUDTAK_Config_group_Blue:-Joint Operations Command}
@@ -252,10 +260,15 @@ services:
         condition: service_healthy
       identity-cache:
         condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.identity
+        required: false
     environment:
-      - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY:-CHANGE_ME_TO_A_SECURE_RANDOM_STRING_MIN_50_CHARS}
+      - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY}
       - AUTHENTIK_BOOTSTRAP_PASSWORD=${AUTHENTIK_BOOTSTRAP_PASSWORD:-admin}
-      - AUTHENTIK_BOOTSTRAP_TOKEN=${AUTHENTIK_BOOTSTRAP_TOKEN:-}
+      - AUTHENTIK_BOOTSTRAP_TOKEN=${AUTHENTIK_BOOTSTRAP_TOKEN}
       - AUTHENTIK_REDIS__HOST=identity-cache
       - AUTHENTIK_POSTGRESQL__HOST=${AUTHENTIK_POSTGRESQL__HOST:-postgis}
       - AUTHENTIK_POSTGRESQL__NAME=${AUTHENTIK_POSTGRESQL__NAME:-authentik}
@@ -264,6 +277,7 @@ services:
       - AUTHENTIK_DISABLE_UPDATE_CHECK=true
       - AUTHENTIK_DISABLE_STARTUP_ANALYTICS=true
       - AUTHENTIK_ERROR_REPORTING__ENABLED=false
+      - AUTHENTIK_HOST=${AUTHENTIK_HOST:-http://localhost:9000}
       - AUTHENTIK_LOG_LEVEL=${AUTHENTIK_LOG_LEVEL:-info}
     volumes:
       - authentik-media:/media
@@ -291,10 +305,17 @@ services:
         condition: service_healthy
       identity-cache:
         condition: service_healthy
+      identity-server:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.identity
+        required: false
     environment:
-      - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY:-CHANGE_ME_TO_A_SECURE_RANDOM_STRING_MIN_50_CHARS}
+      - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY}
       - AUTHENTIK_BOOTSTRAP_PASSWORD=${AUTHENTIK_BOOTSTRAP_PASSWORD:-admin}
-      - AUTHENTIK_BOOTSTRAP_TOKEN=${AUTHENTIK_BOOTSTRAP_TOKEN:-}
+      - AUTHENTIK_BOOTSTRAP_TOKEN=${AUTHENTIK_BOOTSTRAP_TOKEN}
       - AUTHENTIK_REDIS__HOST=identity-cache
       - AUTHENTIK_POSTGRESQL__HOST=${AUTHENTIK_POSTGRESQL__HOST:-postgis}
       - AUTHENTIK_POSTGRESQL__NAME=${AUTHENTIK_POSTGRESQL__NAME:-authentik}
@@ -303,6 +324,7 @@ services:
       - AUTHENTIK_DISABLE_UPDATE_CHECK=true
       - AUTHENTIK_DISABLE_STARTUP_ANALYTICS=true
       - AUTHENTIK_ERROR_REPORTING__ENABLED=false
+      - AUTHENTIK_HOST=${AUTHENTIK_HOST:-http://localhost:9000}
       - AUTHENTIK_LOG_LEVEL=${AUTHENTIK_LOG_LEVEL:-info}
     volumes:
       - authentik-media:/media
