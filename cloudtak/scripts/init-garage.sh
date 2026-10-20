@@ -20,7 +20,7 @@ echo "Garage daemon is responding."
 
 # 1. Check layout and assign if needed
 LAYOUT_SHOW=$(docker exec "${CONTAINER_NAME}" /garage layout show 2>&1 || true)
-if echo "$LAYOUT_SHOW" | grep -q "No layout configuration" || echo "$LAYOUT_SHOW" | grep -q "NO ROLE ASSIGNED"; then
+if echo "$LAYOUT_SHOW" | grep -q "No nodes currently have a role" || echo "$LAYOUT_SHOW" | grep -q "No layout configuration" || echo "$LAYOUT_SHOW" | grep -q "NO ROLE ASSIGNED"; then
   echo "Configuring single-node Garage layout..."
   NODE_ID=$(docker exec "${CONTAINER_NAME}" /garage status 2>&1 | grep -E '^[0-9a-fA-F]{16,64}' | head -n 1 | awk '{print $1}')
   

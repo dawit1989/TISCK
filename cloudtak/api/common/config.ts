@@ -163,7 +163,25 @@ export default class Config {
         }
 
         let SigningSecret, API_URL, PMTILES_URL, WEBHOOKS_URL, MAIL_DOMAIN, Bucket;
-        if (!process.env.StackName || process.env.StackName === 'test') {
+        if (process.env.CLOUDTAK_Mode === 'docker-compose') {
+            process.env.StackName = process.env.StackName || 'tisck';
+
+            if (!process.env.SigningSecret || process.env.SigningSecret === 'coe-wildland-fire' || process.env.SigningSecret === 'CHANGE_ME_TO_A_SECURE_RANDOM_STRING_MIN_32_CHARS' || process.env.SigningSecret.length < 32) {
+                if (process.env.NODE_ENV === 'test' || process.env.StackName === 'test') {
+                    SigningSecret = process.env.SigningSecret || 'tisck-test-signing-secret-random-32chars';
+                } else {
+                    throw new Error('SigningSecret environment variable must be set to a secure random string (minimum 32 characters) in docker-compose mode');
+                }
+            } else {
+                SigningSecret = process.env.SigningSecret;
+            }
+
+            Bucket = process.env.ASSET_BUCKET || 'cloudtak';
+            API_URL = process.env.API_URL || 'http://localhost:5000';
+            PMTILES_URL = process.env.PMTILES_URL || 'http://tiles:5002';
+            WEBHOOKS_URL = process.env.WEBHOOKS_URL || 'http://localhost:5001';
+            MAIL_DOMAIN = process.env.MAIL_DOMAIN || 'mail.localhost';
+        } else if (!process.env.StackName || process.env.StackName === 'test') {
             process.env.StackName = 'test';
 
             SigningSecret = process.env.SigningSecret || 'coe-wildland-fire';
@@ -201,7 +219,7 @@ export default class Config {
         }
 
         const pg: Pool<typeof pgtypes> = await Pool.connect(args.postgres, pgtypes, {
-            ssl: process.env.StackName === 'test' ? undefined : { rejectUnauthorized: false },
+            ssl: (process.env.CLOUDTAK_Mode === 'docker-compose' || process.env.StackName === 'test') ? undefined : { rejectUnauthorized: false },
             migrationsFolder: opts.migrate ? (new URL('../migrations', import.meta.url)).pathname : undefined,
         });
 
@@ -358,7 +376,7 @@ export default class Config {
         return {
             silent: (args.silent || false),
             noevents: (args.noevents || false),
-            noetlevents: (args.noetlevents || false),
+            noetlevents: (args.noetlevents !== undefined ? args.noetlevents : (process.env.CLOUDTAK_Mode === 'docker-compose' ? true : false)),
             nogeofence: (args.nogeofence || false),
             noconnections: (args.noconnections || false),
             nocache: (args.nocache || false),

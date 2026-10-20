@@ -1,4 +1,7 @@
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
+if (Test-Path variable:global:PSNativeCommandUseErrorActionPreference) {
+    $global:PSNativeCommandUseErrorActionPreference = $false
+}
 
 $ContainerName = if ($env:GARAGE_CONTAINER) { $env:GARAGE_CONTAINER } else { "cloudtak-store-1" }
 $AssetBucket = if ($env:ASSET_BUCKET) { $env:ASSET_BUCKET } else { "cloudtak" }
@@ -16,7 +19,7 @@ Write-Host "Garage daemon is responding."
 
 # 1. Cluster Layout
 $Layout = docker exec $ContainerName /garage layout show 2>&1
-if ($Layout -match "No layout configuration" -or $Layout -match "NO ROLE ASSIGNED") {
+if ($Layout -match "No nodes currently have a role" -or $Layout -match "No layout configuration" -or $Layout -match "NO ROLE ASSIGNED") {
     Write-Host "Configuring single-node Garage layout..."
     $Status = docker exec $ContainerName /garage status 2>&1
     $NodeId = ($Status | Select-String -Pattern '^[0-9a-fA-F]{16,64}').Matches[0].Value.Split()[0]

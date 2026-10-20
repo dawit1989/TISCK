@@ -222,7 +222,7 @@ export default class ETLEvents {
     }
 
     async submit(layer: number, messages: Message[]): Promise<void> {
-        if (!messages.length || process.env.CLOUDTAK_Mode === 'docker-compose') return;
+        if (!messages.length || this.config.noetlevents) return;
 
         const queue = await this.queueUrl(layer);
 
