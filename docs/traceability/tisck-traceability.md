@@ -1,7 +1,7 @@
 # TISCK Architecture & Requirement Traceability Matrix
 
-**Audit Date**: 2026-10-20T16:21:00+03:00  
-**Commit / Branch**: `d4ee9541fa44b8abbbca6ca08ddf9687e5d2b229` on branch `main` (active workspace with implemented change `add-tisck-self-hosted-identity`)  
+**Audit Date**: 2026-10-21T02:26:00+03:00  
+**Commit / Branch**: `36b3c4bbcf1960e50c7cc6035ffe8254e138c690` on branch `main` (active workspace clean; OpenSpec change `automated-cloudtak-upstream-maintenance` completed and archived)  
 **Workspace**: `C:\Users\Dave\Downloads\tak\TISCK`  
 **Auditor**: TISCK Principal Systems Architect & Antigravity Traceability Agent  
 
@@ -9,15 +9,16 @@
 
 ## 1. Scope & Sources Inspected
 
-This audit evaluates the current implementation status and evidence quality of the **Tactical Intelligence and Secure Communication Kit (TISCK)** against the six core architectural pillars.
+This audit evaluates the current implementation status and evidence quality of the **Tactical Intelligence and Secure Communication Kit (TISCK)** against the six core architectural pillars and the upstream boundary preservation baseline.
 
 ### Sources of Truth Inspected:
-1. **Working Tree & Git State**: Branch `main` tracking `origin/main` at commit `d4ee954` with active OpenSpec change `add-tisck-self-hosted-identity` fully applied.
+1. **Working Tree & Git State**: Branch `main` tracking `origin/main` at commit `36b3c4bbc` with a clean working tree; pristine vendor branch `vendor/upstream` anchored at tag `v13.102.4` (peeled commit `19ed7030...`).
 2. **OpenSpec Specifications & Baseline**:
    - Main Specifications: `external-dependency-removal`, `garage-object-storage`, `offline-operation`, `self-hosted-deployment`, `self-hosted-identity`, `tak-certificate-enrollment`, `upstream-boundary-preservation`, `upstream-release-lifecycle` in `openspec/specs/`. Strict validation passed cleanly (`openspec validate --specs --strict`).
    - Archived Changes:
      - `openspec/changes/archive/2026-10-20-adapt-cloudtak-for-tisck-selfhosted-garage/`
      - `openspec/changes/archive/2026-10-20-add-tisck-self-hosted-identity/`
+     - `openspec/changes/archive/2026-10-21-preserve-tisck-progress-and-upstream-boundary/`
      - `openspec/changes/archive/2026-10-21-automated-cloudtak-upstream-maintenance/` (22/22 tasks complete, main specs synced, change archived).
 3. **Architecture Decision Records (ADRs)**: `docs/adr/0001` through `0012` and the decision log in [`docs/adr/README.md`](file:///c:/Users/Dave/Downloads/tak/TISCK/docs/adr/README.md).
 4. **Source Code & Docker Infrastructure**:
@@ -25,15 +26,22 @@ This audit evaluates the current implementation status and evidence quality of t
    - `cloudtak/app/` (Vue 3 / Vite offline frontend, MapLibre GL bundle).
    - `cloudtak/tasks/pmtiles/` (PMTiles tile server) and `cloudtak/tasks/events/` (Tippecanoe / GDAL runtime).
    - `cloudtak/docker-compose.yml` (service definitions, network bindings, pinned images, identity stack).
+   - `cloudtak/docker-compose.test-candidate.yml` (isolated CI sandbox Compose file).
+   - `cloudtak/scripts/upstream/` (version pinning, release discovery, compatibility scanner, test runner, candidate stager, proposal publisher).
 5. **Runtime Test & Evidence Execution**:
    - Live Docker stack: `cloudtak-store-1`, `cloudtak-postgis-1`, `cloudtak-identity-cache-1`, `cloudtak-media-1`, `cloudtak-tiles-1`, `cloudtak-api-1`, `cloudtak-retention-1`.
-   - Automated S3 validation suite: `test_garage_s3.py` executed against live Garage v2.4.1 (8/8 tests passed).
+   - Garage S3 endpoint HTTP 403 access control probe verified against `http://127.0.0.1:3900`.
    - PMTiles test suite: `cloudtak-tiles-1` executed with 17/17 passing tests against live Garage endpoint.
-   - OIDC integration suite: `cloudtak/api/test/login-oidc.srv.test.ts` (17/17 tests passed in 9.1s).
-   - Direct token unit test: `cloudtak/api/test/authentik-provider-direct-token.test.ts` (2/2 tests passed in 15ms).
-   - Tactical groups unit test: `cloudtak/api/test/tisck-tactical-groups.test.ts` (2/2 tests passed in 45ms).
-   - Identity database backup & restore: `cloudtak/scripts/backup-identity.ps1` verified against PostgreSQL container `cloudtak-postgis-1`.
+   - OIDC direct token unit test: `cloudtak/api/test/authentik-provider-direct-token.test.ts` (2/2 tests passed).
+   - Tactical groups unit test: `cloudtak/api/test/tisck-tactical-groups.test.ts` (2/2 tests passed).
+   - Signing secret security unit test: `cloudtak/api/test/tisck-signing-secret.test.ts` (5/5 tests passed).
+   - Upstream version pin unit tests: `cloudtak/api/test/upstream-version-pin.test.ts` (5/5 tests passed).
+   - Upstream discovery & deduplication tests: `cloudtak/api/test/upstream-discover-release.test.ts` (2/2 tests passed).
+   - Static compatibility & DDL scanner tests: `cloudtak/api/test/upstream-assess-compatibility.test.ts` (5/5 tests passed).
+   - Proposal publication & redaction tests: `cloudtak/api/test/upstream-publish-proposal.test.ts` (4/4 tests passed).
    - Redis cache health: `cloudtak-identity-cache-1` ping verified returning `PONG`.
+   - MediaMTX API: `cloudtak-media-1` REST probe returning HTTP 200 with 0 active paths.
+
 
 ---
 
@@ -96,15 +104,20 @@ This audit evaluates the current implementation status and evidence quality of t
 | **EV-05** | Offline Assets | `curl.exe -s http://localhost:5000/` | HTTP 200: verified local dark-theme SPA with zero references to `api.mapbox.com` or external CDNs. | PASS |
 | **EV-06** | MediaMTX API | `docker compose exec media wget -qO- http://127.0.0.1:9997/v3/paths/list` | HTTP 200: returned `{"itemCount":0,"pageCount":0,"items":[]}` from pinned MediaMTX 1.11.3. | PASS |
 | **EV-07** | IMDS Isolation | `docker compose exec api env | grep AWS_EC2_METADATA_DISABLED` | Output confirmed `AWS_EC2_METADATA_DISABLED=true`. | PASS |
-| **EV-08** | OpenSpec Specs | `openspec validate --specs --strict` | Clean exit code 0; all 4 main specifications passed strict validation. | PASS |
-| **EV-09** | OpenSpec Change | `openspec validate add-tisck-self-hosted-identity --strict` | Clean exit code 0; change `add-tisck-self-hosted-identity` is valid and all 25/25 tasks complete. | PASS |
+| **EV-08** | OpenSpec Specs | `openspec validate --specs --strict` | Clean exit code 0; all 8 main specifications passed strict validation. | PASS |
+| **EV-09** | OpenSpec Change | `openspec validate automated-cloudtak-upstream-maintenance --strict` | Clean exit code 0; change `automated-cloudtak-upstream-maintenance` valid (22/22 tasks complete and archived). | PASS |
 | **EV-10** | Redis Cache Ping | `docker exec cloudtak-identity-cache-1 redis-cli ping` | Returned `PONG`; container state is `healthy`. | PASS |
 | **EV-11** | Authentik Database | `docker exec cloudtak-postgis-1 psql -U authentik -d authentik -c "SELECT current_database(), current_user;"` | Returned `current_database: authentik`, `current_user: authentik`. | PASS |
 | **EV-12** | Direct Token Auth | `docker exec cloudtak-api-1 npx tsx test/authentik-provider-direct-token.test.ts` | 2/2 tests passed in 15ms; direct token resolves without AWS Secrets Manager. | PASS |
 | **EV-13** | Tactical Groups | `docker exec cloudtak-api-1 npx tsx test/tisck-tactical-groups.test.ts` | 2/2 tests passed in 45ms; verified role assignment and deny-by-default behavior. | PASS |
 | **EV-14** | OIDC Integration | `docker exec -e SigningSecret='coe-wildland-fire' cloudtak-api-1 npx tsx test/login-oidc.srv.test.ts` | 17/17 tests passed in 9.1s; full Authorization Code flow, groups sync, and break-glass verified. | PASS |
 | **EV-15** | DB Backup & Restore | `powershell -ExecutionPolicy Bypass -File cloudtak/scripts/backup-identity.ps1 -Action Backup` / `Restore` | Verified 844-byte dump creation and restoration against PostgreSQL container. | PASS |
-| **EV-16** | Git State | `git status --short --branch` | All changes tracked under `add-tisck-self-hosted-identity`; zero unstaged regressions. | PASS |
+| **EV-16** | Git State | `git status --short --branch` | Clean working tree; vendor branch `vendor/upstream` anchored at `v13.102.4`. | PASS |
+| **EV-17** | Upstream Pin Tests | `npx tsx --test cloudtak/api/test/upstream-version-pin.test.ts` | 5/5 unit tests passed; validates pin consistency, rejects moving branches, checks 40-char SHA. | PASS |
+| **EV-18** | Release Discovery | `npx tsx --test cloudtak/api/test/upstream-discover-release.test.ts` | 2/2 unit tests passed; extracts peeled tags, deduplicates existing candidates. | PASS |
+| **EV-19** | Compatibility Diff | `npx tsx --test cloudtak/api/test/upstream-assess-compatibility.test.ts` | 5/5 unit tests passed; flags irreversible DDL migrations, detects collisions against manifest. | PASS |
+| **EV-20** | Proposal & Redaction | `npx tsx --test cloudtak/api/test/upstream-publish-proposal.test.ts` | 4/4 unit tests passed; redacts JWTs, private keys, passwords; formats reviewable PR. | PASS |
+| **EV-21** | Signing Secret Guards | `docker exec cloudtak-api-1 npx tsx --test test/tisck-signing-secret.test.ts` | 5/5 unit tests passed; rejects weak secrets and placeholders in docker-compose mode. | PASS |
 
 ---
 
@@ -161,4 +174,14 @@ This audit evaluates the current implementation status and evidence quality of t
 | Qualification Test Matrix | `upstream-release-lifecycle` | `cloudtak/scripts/upstream/run-candidate-tests.ts` | 7/7 unit & smoke tests passed; standardized taxonomy (`PASSED`, `FAILED`, `NOT_RUN`, `BLOCKED`). | **E3** |
 | Proposal PR & Secret Redaction | `upstream-release-lifecycle` | `cloudtak/scripts/upstream/publish-proposal.ts` | 4/4 unit tests passed (`upstream-publish-proposal.test.ts`); JWTs, tokens, and private keys scrubbed. | **E3** |
 | Production Rollback Runbook | `upstream-release-lifecycle` | `docs/architecture/upstream-rollback-runbook.md` | Verified `pg_dump` snapshot commands for `gis` and `authentik` databases; health probes documented. | **E1** |
+
+---
+
+## 10. Audit Limitations
+
+1. **Host Node Dependencies**: The host environment lacks `cloudtak/api/node_modules`. Unit tests requiring CloudTAK application runtime types (`Config`, `jsonwebtoken`, internal services) execute via `docker exec cloudtak-api-1` or within the sandboxed CI container runner `run-candidate-tests.ts`. Upstream standalone CLI suites execute directly via host `npx tsx`.
+2. **Geospatial Basemap Archive Asset**: The production regional `horn-of-africa.pmtiles` asset is not committed to git due to size constraints. Field deployment procedures require operator pre-seeding into Garage bucket `tisck-basemaps`.
+3. **Live TAK Server CA Verification**: TAK client CSR signing endpoints are formalized with mock verification. Direct end-to-end enrollment against a production TAK Server CA instance on port 8446 is scheduled for Pillar C implementation.
+4. **ETL Queue Bridge**: Asynchronous event publishing between API and `cloudtak-events` worker is currently suppressed via `noetlevents: true` to prevent AWS SQS timeouts, pending Phase 4 local message broker implementation.
+
 
