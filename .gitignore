@@ -1,0 +1,15 @@
+# Environment and local config
+.env
+*.local
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+
+# OS & Editor artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
