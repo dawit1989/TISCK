@@ -90,6 +90,9 @@ cp .env.example .env
 ```
 Ensure `SigningSecret` is populated with a random 32+ character string.
 
+> [!TIP]
+> If running on a host machine with existing services (e.g. OpenTAKServer or local PostgreSQL), configure `POSTGRES_PORT=5435` and `MEDIA_PORT_API=19997` in `.env` to prevent host port collisions without changing container-internal networking.
+
 ### 3. Launch Services
 ```bash
 docker compose up -d
@@ -111,3 +114,44 @@ Run the initialization script once upon initial startup to configure the cluster
 - **CloudTAK Web UI**: `http://<HOST_IP>:5000`
 - **PMTiles Tile Server**: `http://<HOST_IP>:5002`
 - **Video Streams**: `rtsp://<HOST_IP>:8554/<stream_name>` or `http://<HOST_IP>:8889/<stream_name>`
+
+---
+
+## Architecture Decision Records (ADRs)
+
+Key architectural decisions are documented under [`docs/adr/`](docs/adr/README.md):
+
+- [**ADR 0001**](docs/adr/0001-aws-runtime-decoupling.md): AWS Runtime Decoupling (SecretsManager, STS, IMDS) — *Accepted*
+- [**ADR 0002**](docs/adr/0002-upstream-mediamtx-video-streaming.md): Upstream MediaMTX Container Replacement — *Accepted*
+- [**ADR 0003**](docs/adr/0003-garage-s3-object-storage.md): Single-Node Garage S3 Storage Engine — *Accepted*
+- [**ADR 0004**](docs/adr/0004-outgoing-etl-event-queue-bypass.md): Outgoing ETL Event Queue Bypass & Local Delivery Gap — *Partially Implemented*
+- [**ADR 0005**](docs/adr/0005-offline-geospatial-assets-and-pmtiles.md): Offline Geospatial Asset Bundling & PMTiles Basemaps — *Partially Implemented*
+- [**ADR 0006**](docs/adr/0006-network-interface-and-port-binding-matrix.md): Dual Network Interface & Port Binding Isolation — *Accepted*
+- [**ADR 0007**](docs/adr/0007-self-contained-docker-compose-deployment.md): Self-Contained Docker Compose Deployment — *Accepted*
+- [**ADR 0008**](docs/adr/0008-horn-of-africa-geospatial-baseline-and-tactical-groups.md): Horn of Africa Geospatial Baseline & Tactical Groups — *Accepted*
+
+---
+
+## Requirement Traceability & Pillar Compliance
+
+Full requirement-to-code-and-evidence traceability across all six TISCK architecture pillars is maintained under `docs/traceability/`:
+
+- [**Traceability Report & Full Matrix**](docs/traceability/tisck-traceability.md)
+- [**Machine-Readable Matrix (CSV)**](docs/traceability/tisck-traceability.csv)
+
+### Traceability Audit Skill
+The workspace includes an automated audit skill located at [`.agents/skills/tisck-traceability/SKILL.md`](.agents/skills/tisck-traceability/SKILL.md). In Antigravity, re-run audits anytime by issuing:
+```text
+/tisck-traceability
+```
+
+---
+
+## OpenSpec Specifications
+
+Baseline behavior contracts are cataloged in [`openspec/specs/`](openspec/specs/):
+- [`external-dependency-removal`](openspec/specs/external-dependency-removal/spec.md): Elimination of AWS SecretsManager, STS, SQS, and excluded infrastructure repos.
+- [`garage-object-storage`](openspec/specs/garage-object-storage/spec.md): Garage S3 CRUD, byte-range requests, path-style addressing, and persistence.
+- [`offline-operation`](openspec/specs/offline-operation/spec.md): Air-gapped basemaps, offline UI asset bundling, and Horn of Africa coverage.
+- [`self-hosted-deployment`](openspec/specs/self-hosted-deployment/spec.md): Compose orchestration, health checks, and dual network interface isolation.
+
