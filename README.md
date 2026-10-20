@@ -192,4 +192,15 @@ Baseline behavior contracts are cataloged in [`openspec/specs/`](openspec/specs/
 - [`self-hosted-deployment`](openspec/specs/self-hosted-deployment/spec.md): Compose orchestration, health checks, and dual network interface isolation.
 - [`self-hosted-identity`](openspec/specs/self-hosted-identity/spec.md): Authentik server, worker, cache orchestration, tactical groups, TOTP MFA, and fail-closed security.
 - [`tak-certificate-enrollment`](openspec/specs/tak-certificate-enrollment/spec.md): TAK client CSR generation, CA REST endpoints, validity verification, and port 8446 verification.
+- [`upstream-boundary-preservation`](openspec/specs/upstream-boundary-preservation/spec.md): Five-tier architecture boundary enforcement, upstream source preservation, dual-homed backchannel OIDC constraints, and non-destructive test validation.
+
+---
+
+## Upstream CloudTAK Preservation & Boundary Governance
+
+Detailed governance guides for maintaining upstream CloudTAK boundaries are available under [`docs/architecture/`](docs/architecture/):
+- [**Upstream Boundary & Preservation Guide**](docs/architecture/upstream-boundary.md): Delineates the 5 architectural tiers (Upstream CloudTAK, TISCK Deployment, TISCK Integration, TISCK Test, External Services) and developer preservation rules.
+- [**Patch Evaluation & Retirement Governance**](docs/architecture/patch-evaluation-governance.md): Evidence-based evaluation protocol and isolated branch testing for candidate patch retirements.
+- [**Upstream Synchronization Runbook**](docs/UPSTREAM-SYNC.md): Step-by-step 3-way git merge workflow via pristine `vendor/upstream` branch.
+
 
