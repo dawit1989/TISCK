@@ -1,59 +1,97 @@
-# Upstream CloudTAK Synchronization & Preservation Runbook
+# Upstream CloudTAK Synchronization & Release Maintenance Runbook
 
-## 1. Overview
+## 1. Overview & Architectural Baseline
 
-TISCK maintains an isolated copy of CloudTAK under `cloudtak/` pinned to version `v13.102.4` (recorded in `cloudtak/.upstream-version`). This runbook governs how upstream updates from [`dfpc-coe/CloudTAK`](https://github.com/dfpc-coe/CloudTAK) are evaluated and synchronized without overwriting TISCK's self-hosted deployment and integration assets.
+TISCK maintains an adapted copy of CloudTAK under `cloudtak/` pinned to version `v13.102.4` (resolved commit SHA `19ed703003436efc36cd3440e0b6a5358f8d3098`). The single authoritative source of truth for the approved upstream version tag is [`cloudtak/.upstream-version`](file:///c:/Users/Dave/Downloads/tak/TISCK/cloudtak/.upstream-version), with metadata tracked in [`cloudtak/config/upstream-release-state.json`](file:///c:/Users/Dave/Downloads/tak/TISCK/cloudtak/config/upstream-release-state.json).
 
----
-
-## 2. Pinned Upstream Lineage & Architectural Constraints
-
-Upstream CloudTAK was architected as an AWS cloud-native application relying on AWS Secrets Manager, ALB headers for authentication, and AWS SQS for event queues. 
-
-A central architectural condition governs this relationship:
+A foundational architectural constraint governs this relationship:
 > **Upstream CloudTAK DOES have built-in OIDC SSO concepts, but its configuration model is database/UI-driven (`oidc::*` settings), and its backchannel network assumptions assume a flat DNS space rather than dual-homed Docker service names.**
 
-TISCK bridges this by maintaining:
+TISCK bridges this by maintaining documented customizations cataloged in [`cloudtak/config/tisck-customization-manifest.json`](file:///c:/Users/Dave/Downloads/tak/TISCK/cloudtak/config/tisck-customization-manifest.json):
 - Dual-homed Docker URL rewriting in `cloudtak/api/stateless/lib/oidc.ts`.
-- Environment-driven configuration via `docker-compose.yml`.
-- Self-hosted Authentik attribute synchronization and TAK client certificate locking in `cloudtak/api/stateless/routes/login.ts`.
+- 32-character signing secret guards and local PostGIS SSL bypass in `cloudtak/api/common/config.ts`.
+- Direct `AUTHENTIK_API_TOKEN` support in `cloudtak/api/stateless/lib/authentik-provider.ts`.
+- Authentik tactical group synchronization and advisory-locked TAK certificate issuance in `cloudtak/api/stateless/routes/login.ts`.
+- Environment-driven 5-tier orchestration in `cloudtak/docker-compose.yml`.
 
 ---
 
-## 3. Upstream Synchronization Protocol (Stage E)
+## 2. Six-Stage Release Maintenance Protocol (Stages A–F)
 
-### Step 1: Upstream Release Assessment
-Before initiating a sync:
-1. Review the upstream release notes for changes to authentication, database schemas, and S3 storage.
-2. Confirm whether upstream has added native non-AWS configuration flags that could replace TISCK Type 4 patches.
+Upstream CloudTAK maintenance follows a strict six-stage lifecycle that decouples release discovery and candidate qualification from production deployment:
 
-### Step 2: 3-Way Git Merge via Vendor Branch
-To ensure no TISCK customization is silently deleted:
-1. Maintain a pristine upstream branch (`vendor/upstream`) containing unmodified upstream `api/`, `app/`, and `tasks/`.
-2. Fetch the target upstream release tag (e.g. `v13.103.0`) into `vendor/upstream`.
-3. Create a dedicated sync branch: `git checkout -b sync/upstream-v13.103.0`.
-4. Perform a 3-way merge:
-   ```bash
-   git merge vendor/upstream
-   ```
-5. Resolve conflicts locally:
-   - For TISCK-owned files (`docker-compose.yml`, `scripts/*`, `.env*`, `docs/*`): Keep TISCK versions ("ours").
-   - For patched upstream files (`oidc.ts`, `login.ts`, `config.ts`): Verify that dual-homed resolution and 32-char secret enforcement are preserved.
+```
+[Stage A: Detect] -> [Stage B: Analyze] -> [Stage C: Test] -> [Stage D: Prepare] -> [Stage E: Approve] -> [Stage F: Deploy]
+```
 
-### Step 3: Qualification Test Gates
-Before merging any sync branch into `main`:
-1. Execute unit verification tests:
+### Stage A — Detect: Release Discovery & Deduplication
+- **Trigger**: Weekly cron (`.github/workflows/upstream-maintenance.yml`) or manual workflow dispatch (`--tag <tag>`).
+- **Engine**: `cloudtak/scripts/upstream/discover-release.ts`.
+- **Protocol**: Queries `https://github.com/dfpc-coe/CloudTAK.git` via `git ls-remote`, extracts peeled commit SHAs, and verifies against `upstream-release-state.json`.
+- **Guarantees**: Deduplicates already-known releases; skips execution if the release matches the approved baseline; rejects moving branches (`main`, `master`, `latest`).
+
+### Stage B — Analyze: Static Compatibility Assessment
+- **Engine**: `cloudtak/scripts/upstream/assess-compatibility.ts`.
+- **Protocol**: Computes diff against `vendor/upstream`, scanning for:
+  - Irreversible database migrations (`DROP TABLE`, `DROP COLUMN`, `ALTER COLUMN TYPE`, `RENAME TO`).
+  - Authentication and OIDC endpoint changes.
+  - Overlaps with active TISCK patches in `tisck-customization-manifest.json`.
+- **Output**: Generates `COMPATIBILITY-REPORT.md` with risk indicator classifications (High, Medium, Low).
+
+### Stage C — Test: Sandboxed CI Validation
+- **Engine**: `cloudtak/scripts/upstream/run-candidate-tests.ts`.
+- **Sandboxed Compose**: `cloudtak/docker-compose.test-candidate.yml` running with unique project prefix (`-p tisck-ci-<run_id>`) on isolated bridge network `tisck-ci-net` with synthetic credentials.
+- **Test Tiers**:
+  1. *Tier 1 (Unit & Invariants)*: `oidc-url-validation.test.ts`, `tisck-signing-secret.test.ts`, `tisck-tactical-groups.test.ts`, `upstream-version-pin.test.ts`.
+  2. *Tier 2 (Compose Smoke)*: Candidate Compose configuration syntax validation.
+  3. *Tier 3 (Live Integration)*: Authentik direct token provisioning and headless browser CDP login flow (`e2e-browser-login.mjs`).
+  4. *Tier 4 (Persistence)*: Container restart recovery (`verify-persistence.mjs`).
+- **Reporting**: Categorizes outcomes into `PASSED`, `FAILED`, `NOT_RUN`, or `BLOCKED`. Zero production volume mounts or credentials allowed.
+
+### Stage D — Prepare: Pull Request or Triage Issue
+- **Engine**: `cloudtak/scripts/upstream/publish-proposal.ts`.
+- **On Success**: Opens candidate pull request from `candidate/upstream-<tag>` containing release lineage, static compatibility summary, qualification test evidence, and rollback instructions.
+- **On Failure**: Opens a triage issue titled `[Upstream Candidate Blocked] CloudTAK <tag> failed validation` with diagnostic logs. Halts candidate promotion.
+- **Credential Redaction**: All tokens, private keys, and passwords are automatically scrubbed.
+
+### Stage E — Approve: Maintainer Manual Review
+- **Requirement**: A human maintainer reviews the pull request, compatibility findings, and test matrix evidence.
+- **Merge Constraint**: The candidate PR MUST be merged into `main` using a **3-way merge commit** (`git merge --no-ff`).
+  > [!CAUTION]
+  > **NEVER squash or rebase merge upstream candidate pull requests.** Squash and rebase merges discard the second parent commit, destroying the `vendor/upstream` merge base required for future 3-way merges.
+
+### Stage F — Deploy: Authorized Production Deployment
+- **Policy**: Production deployment is NEVER automated or unattended. It is an explicitly authorized operator action.
+- **Pre-Flight Snapshot**: Operator executes pre-deployment database and identity snapshots:
+  ```bash
+  docker exec cloudtak-postgis-1 pg_dump -U docker gis > pre-upgrade-gis.sql
+  docker exec cloudtak-postgis-1 pg_dump -U authentik authentik > pre-upgrade-authentik.sql
+  pwsh cloudtak/scripts/backup-identity.ps1
+  ```
+- **Deployment**:
+  ```bash
+  docker compose -f cloudtak/docker-compose.yml up -d --build
+  ```
+- **Verification**: Run post-deployment health probes and browser login checks.
+
+---
+
+## 3. Disaster Recovery & Rollback Protocol
+
+If post-deployment anomalies arise:
+1. Revert `cloudtak/.upstream-version` and Docker Compose tags to `lastKnownGood` version recorded in `upstream-release-state.json`.
+2. Stop candidate containers:
    ```bash
-   docker exec cloudtak-api-1 npx tsx --test test/oidc-url-validation.test.ts
-   docker exec cloudtak-api-1 npx tsx --test test/tisck-signing-secret.test.ts
-   docker exec cloudtak-api-1 npx tsx --test test/tisck-tactical-groups.test.ts
+   docker compose -f cloudtak/docker-compose.yml down
    ```
-2. Execute browser end-to-end authentication:
+3. If database migrations ran during upgrade, restore pre-upgrade snapshots:
    ```bash
-   node cloudtak/scripts/e2e-browser-login.mjs
+   docker compose -f cloudtak/docker-compose.yml up -d postgis
+   docker exec -i cloudtak-postgis-1 psql -U docker -d gis < pre-upgrade-gis.sql
+   docker exec -i cloudtak-postgis-1 psql -U authentik -d authentik < pre-upgrade-authentik.sql
    ```
-3. Verify persistent volume integrity:
+4. Re-launch verified baseline containers:
    ```bash
-   node cloudtak/scripts/verify-persistence.mjs
+   docker compose -f cloudtak/docker-compose.yml up -d --build
    ```
-4. Update `cloudtak/.upstream-version` with the newly approved tag.
+5. Confirm operational recovery via `node cloudtak/scripts/verify-persistence.mjs`.

@@ -1,0 +1,172 @@
+# ==============================================================================
+# TISCK Isolated Candidate Validation Sandbox Compose Stack
+# Strictly partitioned from production networks, databases, and persistent volumes.
+# ==============================================================================
+name: tisck-candidate
+
+services:
+  # ----------------------------------------------------------------------------
+  # Ephemeral PostGIS 17 Database
+  # ----------------------------------------------------------------------------
+  postgis:
+    image: postgis/postgis:17-3.4-alpine
+    restart: "no"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-gis}
+      - POSTGRES_USER=${POSTGRES_USER:-docker}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-docker}
+    volumes:
+      - ci-postgis-data:/var/lib/postgresql/data
+      - ./scripts/init-authentik-db.sql:/docker-entrypoint-initdb.d/02-authentik.sql:ro
+    ports:
+      - "127.0.0.1:${CI_POSTGRES_PORT:-15432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-docker} -d ${POSTGRES_DB:-gis}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tisck-ci-net
+
+  # ----------------------------------------------------------------------------
+  # Ephemeral Redis Cache for Authentik
+  # ----------------------------------------------------------------------------
+  identity-cache:
+    image: redis:7.4-alpine
+    restart: "no"
+    command: --save "" --appendonly no --loglevel warning
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tisck-ci-net
+    volumes:
+      - ci-redis-data:/data
+
+  # ----------------------------------------------------------------------------
+  # Ephemeral Authentik Identity Server
+  # ----------------------------------------------------------------------------
+  identity-server:
+    image: ghcr.io/goauthentik/server:2024.12.3
+    restart: "no"
+    command: server
+    depends_on:
+      postgis:
+        condition: service_healthy
+      identity-cache:
+        condition: service_healthy
+    environment:
+      - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY:-synthetic-ci-authentik-secret-key-32chars}
+      - AUTHENTIK_BOOTSTRAP_PASSWORD=${AUTHENTIK_BOOTSTRAP_PASSWORD:-admin}
+      - AUTHENTIK_BOOTSTRAP_TOKEN=${AUTHENTIK_BOOTSTRAP_TOKEN:-synthetic-ci-bootstrap-token-32chars}
+      - AUTHENTIK_REDIS__HOST=identity-cache
+      - AUTHENTIK_POSTGRESQL__HOST=postgis
+      - AUTHENTIK_POSTGRESQL__NAME=authentik
+      - AUTHENTIK_POSTGRESQL__USER=authentik
+      - AUTHENTIK_POSTGRESQL__PASSWORD=authentik
+      - AUTHENTIK_DISABLE_UPDATE_CHECK=true
+      - AUTHENTIK_DISABLE_STARTUP_ANALYTICS=true
+      - AUTHENTIK_ERROR_REPORTING__ENABLED=false
+      - AUTHENTIK_HOST=http://localhost:${CI_AUTHENTIK_PORT:-19000}
+      - AUTHENTIK_LOG_LEVEL=warning
+    volumes:
+      - ci-auth-media:/media
+      - ci-auth-templates:/templates
+    ports:
+      - "127.0.0.1:${CI_AUTHENTIK_PORT:-19000}:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "ak healthcheck || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - tisck-ci-net
+
+  # ----------------------------------------------------------------------------
+  # Ephemeral Authentik Worker
+  # ----------------------------------------------------------------------------
+  identity-worker:
+    image: ghcr.io/goauthentik/server:2024.12.3
+    restart: "no"
+    command: worker
+    depends_on:
+      postgis:
+        condition: service_healthy
+      identity-cache:
+        condition: service_healthy
+      identity-server:
+        condition: service_healthy
+    environment:
+      - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRET_KEY:-synthetic-ci-authentik-secret-key-32chars}
+      - AUTHENTIK_BOOTSTRAP_PASSWORD=${AUTHENTIK_BOOTSTRAP_PASSWORD:-admin}
+      - AUTHENTIK_BOOTSTRAP_TOKEN=${AUTHENTIK_BOOTSTRAP_TOKEN:-synthetic-ci-bootstrap-token-32chars}
+      - AUTHENTIK_REDIS__HOST=identity-cache
+      - AUTHENTIK_POSTGRESQL__HOST=postgis
+      - AUTHENTIK_POSTGRESQL__NAME=authentik
+      - AUTHENTIK_POSTGRESQL__USER=authentik
+      - AUTHENTIK_POSTGRESQL__PASSWORD=authentik
+      - AUTHENTIK_DISABLE_UPDATE_CHECK=true
+      - AUTHENTIK_DISABLE_STARTUP_ANALYTICS=true
+      - AUTHENTIK_ERROR_REPORTING__ENABLED=false
+      - AUTHENTIK_HOST=http://localhost:${CI_AUTHENTIK_PORT:-19000}
+      - AUTHENTIK_LOG_LEVEL=warning
+    volumes:
+      - ci-auth-media:/media
+      - ci-auth-templates:/templates
+    networks:
+      - tisck-ci-net
+
+  # ----------------------------------------------------------------------------
+  # Candidate CloudTAK API Container
+  # ----------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    depends_on:
+      postgis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${CI_API_PORT:-15000}:5000"
+    environment:
+      - CLOUDTAK_Mode=docker-compose
+      - CLOUDTAK_Server_Mode=both
+      - SigningSecret=${SigningSecret:-synthetic-ci-signing-secret-random-32chars}
+      - POSTGRES=postgres://docker:docker@postgis:5432/gis
+      - API_URL=http://localhost:${CI_API_PORT:-15000}
+      - ASSET_BUCKET=cloudtak
+      - AWS_EC2_METADATA_DISABLED=true
+      - OIDC_ENABLED=true
+      - OIDC_FORCED=false
+      - OIDC_DISCOVERY_URL=http://identity-server:9000/application/o/cloudtak/.well-known/openid-configuration
+      - OIDC_AUTHORIZATION_URL=http://localhost:${CI_AUTHENTIK_PORT:-19000}/application/o/authorize/
+      - OIDC_CLIENT_ID=cloudtak
+      - OIDC_CLIENT_SECRET=synthetic-ci-oidc-client-secret-32chars
+      - OIDC_SCOPES=openid profile email groups
+      - OIDC_REDIRECT_URI=http://localhost:${CI_API_PORT:-15000}/api/login/oidc/callback
+      - OIDC_ISSUER=http://localhost:${CI_AUTHENTIK_PORT:-19000}/application/o/cloudtak/
+      - AUTHENTIK_HOST=http://localhost:${CI_AUTHENTIK_PORT:-19000}
+      - AUTHENTIK_URL=http://identity-server:9000
+      - AUTHENTIK_APP_SLUG=cloudtak
+      - AUTHENTIK_API_TOKEN=synthetic-ci-authentik-api-token-32chars
+      - SYNC_AUTHENTIK_ATTRIBUTES_ON_LOGIN=true
+    networks:
+      - tisck-ci-net
+
+volumes:
+  ci-postgis-data:
+    driver: local
+  ci-redis-data:
+    driver: local
+  ci-auth-media:
+    driver: local
+  ci-auth-templates:
+    driver: local
+
+networks:
+  tisck-ci-net:
+    driver: bridge

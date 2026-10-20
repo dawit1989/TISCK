@@ -2,8 +2,17 @@ import { execSync } from 'node:child_process';
 import assert from 'node:assert';
 import fs from 'node:fs';
 
+const PROJECT_FLAG = process.env.COMPOSE_PROJECT_NAME ? `-p ${process.env.COMPOSE_PROJECT_NAME}` : '';
+const COMPOSE_FILE_FLAG = process.env.COMPOSE_FILE ? `-f ${process.env.COMPOSE_FILE}` : '';
+const ENV_IDENTITY_FILE = process.env.ENV_IDENTITY_FILE || 'cloudtak/.env.identity';
+const AUTHENTIK_PORT = process.env.AUTHENTIK_PORT || '9000';
+const AUTHENTIK_BASE_URL = process.env.AUTHENTIK_HOST || `http://127.0.0.1:${AUTHENTIK_PORT}`;
+const POSTGIS_CONTAINER = process.env.POSTGIS_CONTAINER || (process.env.COMPOSE_PROJECT_NAME ? `${process.env.COMPOSE_PROJECT_NAME}-postgis-1` : 'cloudtak-postgis-1');
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
 console.log('=== [1] Verifying .env.identity Configuration & Secrets ===');
-const envLines = fs.readFileSync('cloudtak/.env.identity', 'utf8').split('\n');
+const envLines = fs.readFileSync(ENV_IDENTITY_FILE, 'utf8').split('\n');
 const checkedKeys = [];
 
 for (const line of envLines) {
@@ -19,18 +28,20 @@ for (const line of envLines) {
 console.log(`✓ Verified ${checkedKeys.length} environment keys: all non-empty and zero placeholders.`);
 
 console.log('\n=== [2] Testing Authentik Server & Worker Restart ===');
-console.log('Executing: cd cloudtak && docker compose restart identity-server identity-worker');
-execSync('cd cloudtak && docker compose restart identity-server identity-worker', { stdio: 'inherit' });
+const restartCmd = `cd cloudtak && docker compose ${PROJECT_FLAG} ${COMPOSE_FILE_FLAG} restart identity-server identity-worker`.replace(/\s+/g, ' ');
+console.log(`Executing: ${restartCmd}`);
+execSync(restartCmd, { stdio: 'inherit' });
 
 console.log('Waiting for identity-server and identity-worker health status...');
 let healthy = false;
 for (let i = 0; i < 40; i++) {
-    const status = execSync('cd cloudtak && docker compose ps identity-server --format "{{.Health}}"', { encoding: 'utf8' }).trim();
+    const statusCmd = `cd cloudtak && docker compose ${PROJECT_FLAG} ${COMPOSE_FILE_FLAG} ps identity-server --format "{{.Health}}"`.replace(/\s+/g, ' ');
+    const status = execSync(statusCmd, { encoding: 'utf8' }).trim();
     if (status.includes('healthy')) {
         healthy = true;
         break;
     }
-    execSync('powershell -Command Start-Sleep -Seconds 2');
+    await sleep(2000);
 }
 assert.ok(healthy, 'identity-server must recover to healthy state after restart');
 console.log('✓ identity-server successfully recovered to healthy state');
@@ -40,13 +51,13 @@ let discRes;
 let disc;
 for (let i = 0; i < 30; i++) {
     try {
-        discRes = await fetch('http://127.0.0.1:9000/application/o/cloudtak/.well-known/openid-configuration');
+        discRes = await fetch(`${AUTHENTIK_BASE_URL}/application/o/cloudtak/.well-known/openid-configuration`);
         if (discRes.status === 200) {
             disc = await discRes.json();
             break;
         }
     } catch {}
-    execSync('powershell -Command Start-Sleep -Seconds 2');
+    await sleep(2000);
 }
 assert.ok(discRes && discRes.status === 200, 'Discovery must return 200');
 assert.ok(disc.authorization_endpoint, 'Authorization endpoint present');
@@ -55,7 +66,7 @@ assert.ok(disc.userinfo_endpoint, 'UserInfo endpoint present');
 console.log('✓ OIDC discovery operational post-restart');
 
 console.log('\n=== [4] Verifying PostgreSQL Authentik Database Role & Connectivity ===');
-const pgCheck = execSync('docker exec cloudtak-postgis-1 psql -U authentik -d authentik -c "SELECT current_user, current_database();"', { encoding: 'utf8' });
+const pgCheck = execSync(`docker exec ${POSTGIS_CONTAINER} psql -U authentik -d authentik -c "SELECT current_user, current_database();"`, { encoding: 'utf8' });
 assert.ok(pgCheck.includes('authentik'), 'PostgreSQL authentik role authentication must succeed');
 console.log('✓ PostgreSQL authentik role authentication verified');
 

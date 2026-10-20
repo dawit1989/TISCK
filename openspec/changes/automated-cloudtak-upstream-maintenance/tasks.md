@@ -22,23 +22,23 @@
 
 ## 4. Milestone 4: Isolated Candidate Test Environment
 
-- [ ] 4.1 Construct isolated CI Compose configuration `cloudtak/docker-compose.test-candidate.yml` with unique network `tisck-ci-net`, disposable storage volumes, synthetic secrets, and non-conflicting loopback port bindings, verifying `docker compose config` syntax
-- [ ] 4.2 Parameterize test harnesses (`cloudtak/scripts/e2e-browser-login.mjs` and `cloudtak/scripts/verify-persistence.mjs`) to accept dynamic Compose project names (`-p`), synthetic env files, and dynamic Chromium executable resolution (`CHROME_BIN`/`EDGE_PATH`), verifying local dry-run invocation
-- [ ] 4.3 Implement candidate test runner `cloudtak/scripts/upstream/run-candidate-tests.ts` executing test tiers (Tier 1 unit tests, Tier 2 API smoke tests, Tier 3 live Authentik integration & browser E2E, Tier 4 persistence), verifying categorized test output (`PASSED`, `FAILED`, `NOT_RUN`, `BLOCKED`)
-- [ ] 4.4 Verify that candidate test execution runs in an isolated container namespace with zero mount points, network traffic, or state modifications to active production volumes (`postgis-data`, `authentik-media`, `garage-data`)
+- [x] 4.1 Construct isolated CI Compose configuration `cloudtak/docker-compose.test-candidate.yml` with unique network `tisck-ci-net`, disposable storage volumes, synthetic secrets, and non-conflicting loopback port bindings, verifying `docker compose config` syntax
+- [x] 4.2 Parameterize test harnesses (`cloudtak/scripts/e2e-browser-login.mjs` and `cloudtak/scripts/verify-persistence.mjs`) to accept dynamic Compose project names (`-p`), synthetic env files, and dynamic Chromium executable resolution (`CHROME_BIN`/`EDGE_PATH`), verifying local dry-run invocation
+- [x] 4.3 Implement candidate test runner `cloudtak/scripts/upstream/run-candidate-tests.ts` executing test tiers (Tier 1 unit tests, Tier 2 API smoke tests, Tier 3 live Authentik integration & browser E2E, Tier 4 persistence), verifying categorized test output (`PASSED`, `FAILED`, `NOT_RUN`, `BLOCKED`)
+- [x] 4.4 Verify that candidate test execution runs in an isolated container namespace with zero mount points, network traffic, or state modifications to active production volumes (`postgis-data`, `authentik-media`, `garage-data`)
 
 ## 5. Milestone 5: Approval-Gated PR & Diagnostic Issue Generation
 
-- [ ] 5.1 Implement candidate branch builder `cloudtak/scripts/upstream/prepare-candidate.ts` integrating `sync-upstream.sh` 3-way merge logic to create `candidate/upstream-<tag>` from `vendor/upstream`, verifying branch creation without modifying `main`
-- [ ] 5.2 Implement PR and issue publisher `cloudtak/scripts/upstream/publish-proposal.ts` that opens candidate PRs on qualification success and creates triage issues on validation failure, verifying structured markdown generation
-- [ ] 5.3 Implement secret redaction filter in `publish-proposal.ts` scanning PR descriptions, issue bodies, and attached logs for tokens, passwords, and private keys, verifying synthetic credential leak tests
+- [x] 5.1 Implement candidate branch builder `cloudtak/scripts/upstream/prepare-candidate.ts` integrating `sync-upstream.sh` 3-way merge logic to create `candidate/upstream-<tag>` from `vendor/upstream`, verifying branch creation without modifying `main`
+- [x] 5.2 Implement PR and issue publisher `cloudtak/scripts/upstream/publish-proposal.ts` that opens candidate PRs on qualification success and creates triage issues on validation failure, verifying structured markdown generation
+- [x] 5.3 Implement secret redaction filter in `publish-proposal.ts` scanning PR descriptions, issue bodies, and attached logs for tokens, passwords, and private keys, verifying synthetic credential leak tests
 
 ## 6. Milestone 6: End-to-End Workflow Validation & Operational Documentation
 
-- [ ] 6.1 Update Upstream Synchronization Runbook in `docs/UPSTREAM-SYNC.md` with the 6-stage lifecycle governance (Stages A–F), maintainer 3-way merge instructions, and squash/rebase prohibition, verifying document links and procedures
-- [ ] 6.2 Author production deployment and disaster rollback guide `docs/architecture/upstream-rollback-runbook.md` documenting verified `pg_dump` snapshot commands, image rollback, and health checks, verifying procedure against staging deployment
-- [ ] 6.3 Update TISCK Six-Pillar Traceability Matrix in `docs/traceability/tisck-pillar-traceability.md` to reflect `upstream-release-lifecycle` capability requirements and test gates, verifying end-to-end matrix consistency
-- [ ] 6.4 Execute end-to-end dry-run simulation of the release automation pipeline using a controlled upstream test tag, verifying generated compatibility report, test logs, candidate branch, and PR payload
+- [x] 6.1 Update Upstream Synchronization Runbook in `docs/UPSTREAM-SYNC.md` with the 6-stage lifecycle governance (Stages A–F), maintainer 3-way merge instructions, and squash/rebase prohibition, verifying document links and procedures
+- [x] 6.2 Author production deployment and disaster rollback guide `docs/architecture/upstream-rollback-runbook.md` documenting verified `pg_dump` snapshot commands, image rollback, and health checks, verifying procedure against staging deployment
+- [x] 6.3 Update TISCK Six-Pillar Traceability Matrix in `docs/traceability/tisck-pillar-traceability.md` to reflect `upstream-release-lifecycle` capability requirements and test gates, verifying end-to-end matrix consistency
+- [x] 6.4 Execute end-to-end dry-run simulation of the release automation pipeline using a controlled upstream test tag, verifying generated compatibility report, test logs, candidate branch, and PR payload
 
 ## Workflow follow-up
 

@@ -1,21 +1,43 @@
 import { spawn } from 'node:child_process';
-import { rmSync, mkdirSync } from 'node:fs';
+import { rmSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert';
 
-const EDGE_PATH = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
-const userDataDir = join(tmpdir(), `edge_tisck_${Date.now()}`);
+function resolveBrowserPath() {
+    if (process.env.CHROME_BIN && existsSync(process.env.CHROME_BIN)) return process.env.CHROME_BIN;
+    if (process.env.PUPPETEER_EXECUTABLE_PATH && existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) return process.env.PUPPETEER_EXECUTABLE_PATH;
+    if (process.env.EDGE_PATH && existsSync(process.env.EDGE_PATH)) return process.env.EDGE_PATH;
+    const candidates = [
+        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chromium',
+        '/usr/bin/microsoft-edge',
+    ];
+    for (const c of candidates) {
+        if (existsSync(c)) return c;
+    }
+    return candidates[0];
+}
+
+const BROWSER_PATH = resolveBrowserPath();
+const CDP_PORT = process.env.CDP_PORT || '9222';
+const userDataDir = join(tmpdir(), `browser_tisck_${Date.now()}`);
 mkdirSync(userDataDir, { recursive: true });
 
-console.log('[1] Launching Edge headless with CDP...');
-const browser = spawn(EDGE_PATH, [
+console.log(`[1] Launching headless browser with CDP (${BROWSER_PATH})...`);
+const browser = spawn(BROWSER_PATH, [
     '--headless=new',
-    '--remote-debugging-port=9222',
+    `--remote-debugging-port=${CDP_PORT}`,
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-extensions',
+    '--no-sandbox',
 ], { stdio: 'ignore' });
 
 function sleep(ms) {
@@ -53,7 +75,7 @@ const networkEvents = [];
 
 try {
     await sleep(2500);
-    const newTab = await (await fetch('http://127.0.0.1:9222/json/new?about:blank', { method: 'PUT' })).json();
+    const newTab = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?about:blank`, { method: 'PUT' })).json();
     console.log('[2] Created fresh page tab:', newTab.id);
     const targetWsUrl = newTab.webSocketDebuggerUrl;
 

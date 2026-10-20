@@ -138,6 +138,25 @@ This audit evaluates the current implementation status and evidence quality of t
 
 1. **Phase 1 (Complete)**: Self-hosted Docker Compose baseline, AWS decoupling, Garage S3 storage engine, pinned MediaMTX, offline Web UI bundling, Horn of Africa geospatial baseline, and OpenSpec spec synchronization.
 2. **Phase 2 (Complete)**: Self-hosted Authentik identity provider, OIDC Authorization Code integration, AWS Secrets Manager decoupling, TISCK tactical groups, optional LDAP Outpost runbook, and TAK certificate enrollment interface boundary.
-3. **Phase 3 (Immediate Next Step)**: Implement a lightweight local event broker (PostgreSQL `LISTEN`/`NOTIFY` or Redis) to connect the API with `cloudtak-events` without AWS SQS (Pillar E).
-4. **Phase 4 (Medium Term)**: Deploy the selected TAK Core Server (Pillar C) and connect the verified Marti CA enrollment boundary to live client endpoints.
-5. **Phase 5 (Expansion)**: Implement the `@tisck/etl-runtime` package to ingest open-source tactical intelligence feeds (Pillar E).
+3. **Phase 3 (Complete)**: Upstream boundary preservation and automated CloudTAK release maintenance lifecycle (`upstream-release-lifecycle` & `upstream-boundary-preservation`), establishing multi-state version tracking, AST diff analysis, and CI candidate qualification test matrix.
+4. **Phase 4 (Immediate Next Step)**: Implement a lightweight local event broker (PostgreSQL `LISTEN`/`NOTIFY` or Redis) to connect the API with `cloudtak-events` without AWS SQS (Pillar E).
+5. **Phase 5 (Medium Term)**: Deploy the selected TAK Core Server (Pillar C) and connect the verified Marti CA enrollment boundary to live client endpoints.
+6. **Phase 6 (Expansion)**: Implement the `@tisck/etl-runtime` package to ingest open-source tactical intelligence feeds (Pillar E).
+
+---
+
+## 9. Upstream Release Maintenance & Boundary Traceability
+
+| Requirement | OpenSpec Spec | Implementation Asset | Verification Evidence | Level |
+| :--- | :--- | :--- | :--- | :--- |
+| Upstream Source Preservation | `upstream-boundary-preservation` | `docs/architecture/upstream-boundary.md` | Single source pin in `cloudtak/.upstream-version` (`v13.102.4`); zero direct edits to core application source. | **E4** |
+| 3-Way Git Vendor Merging | `upstream-release-lifecycle` | `cloudtak/scripts/sync-upstream.sh` | Pristine branch `vendor/upstream` seeded at SHA `19ed7030...`; ancestry preserved with merge commit. | **E4** |
+| Multi-State Version Ledger | `upstream-release-lifecycle` | `cloudtak/config/upstream-release-state.json`, `version-pin.ts` | 5/5 unit tests passed (`upstream-version-pin.test.ts`); moving branches rejected; consistency asserted. | **E3** |
+| Evidence-Based Customizations | `upstream-boundary-preservation` | `cloudtak/config/tisck-customization-manifest.json` | 9 targets cataloged from git diff; all referenced files and test suites verified existing. | **E3** |
+| Automated Release Discovery | `upstream-release-lifecycle` | `cloudtak/scripts/upstream/discover-release.ts` | 2/2 unit tests passed (`upstream-discover-release.test.ts`); live query against `dfpc-coe/CloudTAK` verified. | **E4** |
+| Static Compatibility Scanner | `upstream-release-lifecycle` | `cloudtak/scripts/upstream/assess-compatibility.ts` | 5/5 unit tests passed; DDL migration scanner flags irreversible changes; collision detection verified. | **E3** |
+| Sandboxed CI Compose Sandbox | `upstream-release-lifecycle` | `cloudtak/docker-compose.test-candidate.yml` | Syntax validated (`docker compose config`); isolated `tisck-ci-net` network with zero production volume mounts. | **E2** |
+| Qualification Test Matrix | `upstream-release-lifecycle` | `cloudtak/scripts/upstream/run-candidate-tests.ts` | 7/7 unit & smoke tests passed; standardized taxonomy (`PASSED`, `FAILED`, `NOT_RUN`, `BLOCKED`). | **E3** |
+| Proposal PR & Secret Redaction | `upstream-release-lifecycle` | `cloudtak/scripts/upstream/publish-proposal.ts` | 4/4 unit tests passed (`upstream-publish-proposal.test.ts`); JWTs, tokens, and private keys scrubbed. | **E3** |
+| Production Rollback Runbook | `upstream-release-lifecycle` | `docs/architecture/upstream-rollback-runbook.md` | Verified `pg_dump` snapshot commands for `gis` and `authentik` databases; health probes documented. | **E1** |
+
