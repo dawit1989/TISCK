@@ -36,7 +36,9 @@ set -euo pipefail
 UPSTREAM_URL="https://github.com/dfpc-coe/CloudTAK.git"
 UPSTREAM_REMOTE="upstream"
 VENDOR_BRANCH="vendor/upstream"
-VERSION_FILE=".upstream-version"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+VERSION_FILE="${REPO_ROOT}/cloudtak/.upstream-version"
+VENDOR_PREFIX="cloudtak"
 # `app` is the web frontend. Upstream kept it at api/web/ until v13.102.x and then
 # moved it to a root-level app/; it must be vendored too or the merge sees the
 # whole frontend as deleted.
@@ -93,7 +95,7 @@ build_vendor_tree() {
     for p in "${SYNC_PATHS[@]}"; do
         git rev-parse -q --verify "$ref:$p" >/dev/null \
             || die "upstream ref '$ref' has no '$p/' directory"
-        GIT_INDEX_FILE="$idx" git read-tree --prefix="$p/" "$ref:$p"
+        GIT_INDEX_FILE="$idx" git read-tree --prefix="${VENDOR_PREFIX}/$p/" "$ref:$p"
     done
 
     tree="$(GIT_INDEX_FILE="$idx" git write-tree)"
@@ -108,7 +110,7 @@ build_vendor_commit() {
 
     msg="vendor: upstream ${SYNC_PATHS[*]} at ${ref}
 
-Pristine upstream content only - no TAK-NZ changes. This branch exists solely
+Pristine upstream content only - no TISCK changes. This branch exists solely
 to give git a correct merge base for upstream syncs."
 
     if [ -n "$parent" ]; then
@@ -198,7 +200,7 @@ if [ "$DO_SEED" = true ]; then
 
 Bookkeeping merge only - changes no files. Records $VENDOR_BRANCH as an
 ancestor so upstream syncs can be a real 3-way merge instead of a wholesale
-overwrite that deletes TAK-NZ customizations." >/dev/null
+overwrite that deletes TISCK customizations." >/dev/null
     after="$(git rev-parse HEAD^{tree})"
 
     [ "$before" = "$after" ] || die "seed merge changed file content - this must never happen"
