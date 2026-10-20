@@ -329,7 +329,7 @@ export default async function router(schema: Schema, config: ConfigStateless) {
             // A failure here is non-fatal — the user still gets a JWT and can
             // try again on the next login, but TAK-connected features won't work
             // until the cert is present.
-            if (process.env.AUTHENTIK_API_TOKEN_SECRET_ARN
+            if ((process.env.AUTHENTIK_API_TOKEN_SECRET_ARN || process.env.AUTHENTIK_API_TOKEN)
                 && process.env.AUTHENTIK_URL
                 && config.server.webtak) {
                 try {

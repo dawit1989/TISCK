@@ -157,42 +157,48 @@ export default class AuthentikProvider {
     config: Config;
     authentikUrl: string;
     tokenArn: string;
+    directToken?: string;
     cache?: { expires: Date; token: string };
 
-    constructor(config: Config, authentikUrl: string, tokenArn: string) {
+    constructor(config: Config, authentikUrl: string, tokenArn: string, directToken?: string) {
         this.config = config;
         this.authentikUrl = authentikUrl;
         this.tokenArn = tokenArn;
+        this.directToken = directToken;
     }
 
     get configured(): boolean {
-        return !!(this.authentikUrl && this.tokenArn);
+        return !!(this.authentikUrl && (this.tokenArn || this.directToken));
     }
 
     static async init(config: Config): Promise<AuthentikProvider> {
         const authentikUrl = process.env.AUTHENTIK_URL || '';
         const tokenArn = process.env.AUTHENTIK_API_TOKEN_SECRET_ARN || '';
+        const directToken = process.env.AUTHENTIK_API_TOKEN || '';
 
         if (!authentikUrl) {
             throw new Err(500, null, 'AUTHENTIK_URL not configured');
         }
 
-        if (!tokenArn) {
-            throw new Err(500, null, 'AUTHENTIK_API_TOKEN_SECRET_ARN not configured');
+        if (!tokenArn && !directToken) {
+            throw new Err(500, null, 'AUTHENTIK_API_TOKEN or AUTHENTIK_API_TOKEN_SECRET_ARN not configured');
         }
 
-        return new AuthentikProvider(config, authentikUrl, tokenArn);
+        return new AuthentikProvider(config, authentikUrl, tokenArn, directToken);
     }
 
     async auth(): Promise<{ expires: Date; token: string }> {
         if (!this.cache || this.cache.expires < new Date()) {
-            const AWS = await import('@aws-sdk/client-secrets-manager');
-            const client = new AWS.SecretsManagerClient({});
-            const response = await client.send(
-                new AWS.GetSecretValueCommand({ SecretId: this.tokenArn }),
-            );
+            let token = this.directToken;
+            if (!token) {
+                const AWS = await import('@aws-sdk/client-secrets-manager');
+                const client = new AWS.SecretsManagerClient({});
+                const response = await client.send(
+                    new AWS.GetSecretValueCommand({ SecretId: this.tokenArn }),
+                );
 
-            const token = response.SecretString || '';
+                token = response.SecretString || '';
+            }
             const expires = new Date();
             expires.setHours(expires.getHours() + 1);
 

@@ -17,6 +17,10 @@ Calls to AWS runtime services SHALL NOT be executed when `CLOUDTAK_Mode=docker-c
 - **WHEN** the application initializes ETL event routing or queue configuration in docker-compose mode
 - **THEN** it SHALL NOT invoke `fetchArnPrefix()` or AWS STS `GetCallerIdentityCommand`
 
+#### Scenario: Authentik API token resolution bypass
+- **WHEN** the application initializes AuthentikProvider in docker-compose mode with `AUTHENTIK_API_TOKEN` set
+- **THEN** it SHALL use the direct token value without initializing or invoking the AWS SecretsManager client
+
 ### Requirement: Elimination of mandatory AWS SQS dependency
 The API and event tasks SHALL NOT require active AWS SQS queues to boot or handle CoT event ingestion.
 

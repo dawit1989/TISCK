@@ -44,7 +44,7 @@ export default async function router(schema: Schema, config: ConfigStateless) {
                     ...list,
                     config: { enabled: true },
                 });
-            } else if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_API_TOKEN_SECRET_ARN) {
+            } else if (process.env.AUTHENTIK_URL && (process.env.AUTHENTIK_API_TOKEN || process.env.AUTHENTIK_API_TOKEN_SECRET_ARN)) {
                 const authentik = await AuthentikProvider.init(config);
 
                 // Scope the agency list to what the caller may administer. A
@@ -88,7 +88,7 @@ export default async function router(schema: Schema, config: ConfigStateless) {
                 if (!profile.id) throw new Err(400, null, 'External ID must be set on profile');
                 const agency = await cotak.agency(profile.id, req.params.agencyid);
                 res.json(agency);
-            } else if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_API_TOKEN_SECRET_ARN) {
+            } else if (process.env.AUTHENTIK_URL && (process.env.AUTHENTIK_API_TOKEN || process.env.AUTHENTIK_API_TOKEN_SECRET_ARN)) {
                 const authentik = await AuthentikProvider.init(config);
 
                 const scope = profile.system_admin ? SCOPE_ALL : agencyScope(profile.agency_admin || []);

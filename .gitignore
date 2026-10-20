@@ -1,6 +1,8 @@
 # Environment and local config
 .env
 *.local
+.env.identity*
+!*.example
 
 # Node & Build artifacts
 node_modules/

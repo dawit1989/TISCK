@@ -7,10 +7,11 @@ TISCK is an offline-first, self-hosted deployment platform for situational aware
 ## Key Features
 
 - **100% Cloud-Independent**: Zero runtime dependencies on AWS (SecretsManager, STS, SQS, CloudFormation, Lambda, CloudWatch, ECR). Operates cleanly with `AWS_EC2_METADATA_DISABLED=true`.
+- **Self-Hosted Identity Foundation**: Offline-first **Authentik 2024.12** identity provider with Redis 7.4 task cache, dedicated PostgreSQL database, OIDC tactical group claims, TOTP MFA, and optional LDAP Outpost.
 - **Integrated Object Storage**: Powered by single-node **Garage v2.4.1**, an ultra-lightweight S3-compatible engine running with persistent Docker volumes.
 - **Offline Geospatial Basemaps**: Fully local vector and raster map serving via PMTiles without contacting external CDNs or commercial map APIs.
 - **Tactical Media Streaming**: Embedded **MediaMTX** supporting RTSP, WebRTC, RTMP, HLS, and SRT drone/bodycam feeds.
-- **Hardened Edge Port Isolation**: Ingress endpoints accessible to tactical mesh clients on `0.0.0.0`, while database and administrative interfaces remain locked down to `127.0.0.1`.
+- **Hardened Edge Port Isolation**: Ingress endpoints accessible to tactical mesh clients on `0.0.0.0`, while database, cache, identity admin, and storage interfaces remain locked down to `127.0.0.1`.
 
 ---
 
@@ -28,10 +29,24 @@ TISCK is an offline-first, self-hosted deployment platform for situational aware
   │   │  api (:5000)             │──────────────▶│  postgis (:5432)             │     │
   │   │  Web UI + REST + CoT     │               │  PostgreSQL 17 + PostGIS     │     │
   │   │  (Bound to 0.0.0.0:5000) │               │  (Bound to 127.0.0.1:5432)   │     │
-  │   └─────────────┬────────────┘               └──────────────────────────────┘     │
-  │                 │                                           ▲                     │
-  │                 │                                           │                     │
-  │   ┌─────────────▼────────────┐               ┌──────────────┴───────────────┐     │
+  │   └──────┬──────────┬────────┘               └──────────────┬───────────────┘     │
+  │          │          │                                       │                     │
+  │          │ OIDC Auth│                                       │                     │
+  │          │          ▼                                       │                     │
+  │          │   ┌──────────────────────────┐                   │                     │
+  │          │   │  identity-server (:9000) │───────────────────┤ (authentik db)      │
+  │          │   │  Authentik 2024.12       │                   │                     │
+  │          │   │  (Bound to 127.0.0.1)    │                   │                     │
+  │          │   └─────────────┬────────────┘                   │                     │
+  │          │                 │                                │                     │
+  │          │                 ├────────────────┐               │                     │
+  │          │                 ▼                ▼               │                     │
+  │          │   ┌────────────────────────┐  ┌────────────────┐ │                     │
+  │          │   │  identity-worker       │  │ identity-cache │ │                     │
+  │          │   │  Background tasks      │  │ Redis 7.4      │ │                     │
+  │          │   └────────────────────────┘  └────────────────┘ │                     │
+  │          │                                                  │                     │
+  │   ┌──────▼───────────────────┐               ┌──────────────┴───────────────┐     │
   │   │  tiles (:5002)           │               │  retention                   │     │
   │   │  PMTiles Server          │               │  Data retention worker       │     │
   │   │  (Bound to 0.0.0.0:5002) │               └──────────────────────────────┘     │
@@ -62,6 +77,9 @@ TISCK is an offline-first, self-hosted deployment platform for situational aware
 | **PostGIS Database** | `5432` | `127.0.0.1:5432` | PostgreSQL geospatial DB (localhost only) |
 | **Garage S3 Data** | `3900` | `127.0.0.1:3900` | Object storage (proxied via API/Tiles) |
 | **Garage Admin API** | `3903` | `127.0.0.1:3903` | Cluster admin & layout API (localhost only) |
+| **Authentik HTTP / HTTPS** | `9000`, `9443` | `127.0.0.1:<port>` | Identity provider web UI & OIDC endpoints (localhost only) |
+| **Authentik Redis Cache** | `6379` | *Internal Docker Network* | Identity task & session cache (no host binding) |
+| **LDAP Outpost (Optional)** | `389`, `636` | `127.0.0.1:<port>` | Optional LDAP compatibility interface (localhost only) |
 
 ---
 
@@ -90,6 +108,10 @@ cp .env.example .env
 ```
 Ensure `SigningSecret` is populated with a random 32+ character string.
 
+For self-hosted identity (Authentik), generate cryptographic secrets automatically:
+- **Linux / WSL**: `bash scripts/generate-identity-secrets.sh`
+- **Windows (PowerShell)**: `.\scripts\generate-identity-secrets.ps1`
+
 > [!TIP]
 > If running on a host machine with existing services (e.g. OpenTAKServer or local PostgreSQL), configure `POSTGRES_PORT=5435` and `MEDIA_PORT_API=19997` in `.env` to prevent host port collisions without changing container-internal networking.
 
@@ -98,22 +120,31 @@ Ensure `SigningSecret` is populated with a random 32+ character string.
 docker compose up -d
 ```
 
-### 4. Initialize Garage Object Store
-Run the initialization script once upon initial startup to configure the cluster layout, create the S3 access key, and provision the `ASSET_BUCKET`:
+### 4. Initialize Storage & Identity
+1. **Initialize Garage Object Store**:
+   - Linux: `bash scripts/init-garage.sh`
+   - Windows: `.\scripts\init-garage.ps1`
 
-- **Linux / WSL**:
-  ```bash
-  bash scripts/init-garage.sh
-  ```
-- **Windows (PowerShell)**:
-  ```powershell
-  .\scripts\init-garage.ps1
-  ```
+2. **Initialize Authentik Database & Tactical Groups**:
+   - Linux: `bash scripts/bootstrap-authentik.sh`
+   - Windows: `.\scripts\bootstrap-authentik.ps1`
+   This sets up the `authentik` logical PostgreSQL database, provisions the OIDC application provider, and configures the default tactical groups (`TISCK_INTEL`, `TISCK_RECON`, `TISCK_COMMAND`, `TISCK_ISR`).
 
 ### 5. Access the Platform
 - **CloudTAK Web UI**: `http://<HOST_IP>:5000`
+- **Authentik Identity UI**: `http://localhost:9000`
 - **PMTiles Tile Server**: `http://<HOST_IP>:5002`
 - **Video Streams**: `rtsp://<HOST_IP>:8554/<stream_name>` or `http://<HOST_IP>:8889/<stream_name>`
+
+---
+
+## Identity Operations & Hardening
+
+Detailed operational guides for the identity stack are available under [`docs/identity/`](docs/identity/):
+- [**Disaster Recovery & Break-Glass Runbook**](docs/identity/disaster-recovery.md): Local emergency logins, CLI password resets, and automated backup/restore (`backup-identity.sh` / `.ps1`).
+- [**Offline Image Bundle Guide**](docs/identity/offline-image-bundle.md): Pre-caching pinned container images (`authentik:2024.12.0`, `redis:7.4-alpine`) for air-gapped transport.
+- [**LDAP Outpost Setup Guide**](docs/identity/ldap-outpost-guide.md): Optional internal-only directory bridge for legacy TAK integrations.
+- [**TAK Certificate Enrollment Boundary**](docs/identity/tak-enrollment-boundary.md): Interface specifications for future X.509 client certificate issuance against internal CAs.
 
 ---
 
@@ -129,6 +160,10 @@ Key architectural decisions are documented under [`docs/adr/`](docs/adr/README.m
 - [**ADR 0006**](docs/adr/0006-network-interface-and-port-binding-matrix.md): Dual Network Interface & Port Binding Isolation — *Accepted*
 - [**ADR 0007**](docs/adr/0007-self-contained-docker-compose-deployment.md): Self-Contained Docker Compose Deployment — *Accepted*
 - [**ADR 0008**](docs/adr/0008-horn-of-africa-geospatial-baseline-and-tactical-groups.md): Horn of Africa Geospatial Baseline & Tactical Groups — *Accepted*
+- [**ADR 0009**](docs/adr/0009-authentik-self-hosted-identity-provider.md): Authentik as the Self-Hosted Identity Provider — *Accepted*
+- [**ADR 0010**](docs/adr/0010-oidc-application-authentication-and-group-mapping.md): OIDC Application Authentication and Tactical Group Mapping — *Accepted*
+- [**ADR 0011**](docs/adr/0011-ldap-outpost-as-optional-compatibility-interface.md): LDAP Outpost as an Optional Internal Compatibility Interface — *Accepted*
+- [**ADR 0012**](docs/adr/0012-tak-certificate-enrollment-integration-boundary.md): TAK Certificate Enrollment Integration Boundary — *Accepted*
 
 ---
 
@@ -154,4 +189,6 @@ Baseline behavior contracts are cataloged in [`openspec/specs/`](openspec/specs/
 - [`garage-object-storage`](openspec/specs/garage-object-storage/spec.md): Garage S3 CRUD, byte-range requests, path-style addressing, and persistence.
 - [`offline-operation`](openspec/specs/offline-operation/spec.md): Air-gapped basemaps, offline UI asset bundling, and Horn of Africa coverage.
 - [`self-hosted-deployment`](openspec/specs/self-hosted-deployment/spec.md): Compose orchestration, health checks, and dual network interface isolation.
+- [`self-hosted-identity`](openspec/specs/self-hosted-identity/spec.md): Authentik server, worker, cache orchestration, tactical groups, TOTP MFA, and fail-closed security.
+- [`tak-certificate-enrollment`](openspec/specs/tak-certificate-enrollment/spec.md): TAK client CSR generation, CA REST endpoints, validity verification, and port 8446 verification.
 

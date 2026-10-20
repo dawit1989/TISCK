@@ -43,7 +43,7 @@ export default async function router(schema: Schema, config: ConfigStateless) {
 
                 const list = await cotak.channels(profile.id!, req.query);
                 res.json(list);
-            } else if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_API_TOKEN_SECRET_ARN) {
+            } else if (process.env.AUTHENTIK_URL && (process.env.AUTHENTIK_API_TOKEN || process.env.AUTHENTIK_API_TOKEN_SECRET_ARN)) {
                 const authentik = await AuthentikProvider.init(config);
 
                 // A non-system-admin may only list channels within an agency
@@ -129,7 +129,7 @@ export default async function router(schema: Schema, config: ConfigStateless) {
                     integrationId: user.integrations.find(Boolean)?.id ?? undefined,
                     auth: certs,
                 });
-            } else if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_API_TOKEN_SECRET_ARN) {
+            } else if (process.env.AUTHENTIK_URL && (process.env.AUTHENTIK_API_TOKEN || process.env.AUTHENTIK_API_TOKEN_SECRET_ARN)) {
                 // Authentik does not support channel-locking; the machine user is created
                 // and a TAK certificate is generated via password auth — same as CoTAK flow.
 
@@ -239,7 +239,7 @@ export default async function router(schema: Schema, config: ConfigStateless) {
                     integrationId: user.integrations.find(Boolean)?.id ?? undefined,
                     auth: certs,
                 });
-            } else if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_API_TOKEN_SECRET_ARN) {
+            } else if (process.env.AUTHENTIK_URL && (process.env.AUTHENTIK_API_TOKEN || process.env.AUTHENTIK_API_TOKEN_SECRET_ARN)) {
                 const authentik = await AuthentikProvider.init(config);
 
                 const password = Array.from({ length: 16 }, () => String.fromCharCode(crypto.randomInt(33, 127)))

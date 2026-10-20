@@ -587,7 +587,7 @@ export default async function router(schema: Schema, config: ConfigStateless) {
 
             let authentik: InstanceType<typeof AuthentikProvider> | null = null;
             try {
-                if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_API_TOKEN_SECRET_ARN) {
+                if (process.env.AUTHENTIK_URL && (process.env.AUTHENTIK_API_TOKEN || process.env.AUTHENTIK_API_TOKEN_SECRET_ARN)) {
                     authentik = await AuthentikProvider.init(config);
                 }
             } catch { /* Authentik not configured */ }
@@ -650,7 +650,7 @@ export default async function router(schema: Schema, config: ConfigStateless) {
 
             let authentik: InstanceType<typeof AuthentikProvider> | null = null;
             try {
-                if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_API_TOKEN_SECRET_ARN) {
+                if (process.env.AUTHENTIK_URL && (process.env.AUTHENTIK_API_TOKEN || process.env.AUTHENTIK_API_TOKEN_SECRET_ARN)) {
                     authentik = await AuthentikProvider.init(config);
                 }
             } catch { /* Authentik not configured */ }
@@ -744,7 +744,7 @@ export default async function router(schema: Schema, config: ConfigStateless) {
             // Delete the Authentik service account associated with this connection.
             // Deleting the user removes its channel-group memberships too, so no
             // separate detach is needed.
-            if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_API_TOKEN_SECRET_ARN) {
+            if (process.env.AUTHENTIK_URL && (process.env.AUTHENTIK_API_TOKEN || process.env.AUTHENTIK_API_TOKEN_SECRET_ARN)) {
                 try {
                     const authentik = await AuthentikProvider.init(config);
 
