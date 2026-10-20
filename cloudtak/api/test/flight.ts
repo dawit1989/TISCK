@@ -1,0 +1,495 @@
+process.env.StackName = 'test';
+
+// Bind the API server to an OS-assigned ephemeral port so test runs never
+// conflict with a locally running dev server (or with each other)
+process.env.PORT = '0';
+
+import CP from 'node:child_process';
+import MockTAKServer from './tak-server.js';
+import jwt from 'jsonwebtoken';
+import fs from 'fs';
+import api from '../index.js';
+import ConfigStateful from '../stateful/config.js';
+import ConfigStateless from '../stateless/config.js';
+import { testDatabase, dropTestDatabase } from './db.js';
+import withFileLock from './lock.js';
+import { pathToRegexp } from 'path-to-regexp';
+import test from 'node:test';
+import assert from 'node:assert';
+import UserControl from '../stateless/lib/control/user.js';
+import { Ajv } from 'ajv';
+import type { FormatsPlugin } from 'ajv-formats';
+import * as ajvFormats from 'ajv-formats';
+const ajv = (ajvFormats.default as unknown as FormatsPlugin)(new Ajv({ allErrors: true }));
+
+/**
+ * @class
+ */
+class FlightResponse {
+    res: Response;
+    ok: boolean;
+    headers: Headers;
+    status: number;
+    body: any;
+
+    constructor(res: Response, body: any) {
+        this.res = res;
+
+        this.ok = res.ok;
+        this.headers = res.headers;
+        this.status = res.status;
+        this.body = body;
+    }
+}
+
+/**
+ * @class
+ */
+export default class Flight {
+    config?: ConfigStateless;
+    stateful?: ConfigStateful;
+    srv?: any; // TODO: HTTP Server
+    base: string;
+    connstr?: string;
+    schema?: object;
+    routes: Record<string, RegExp>;
+    token: Record<string, string>;
+    _tak?: MockTAKServer;
+
+    constructor() {
+        this.base = '';
+        this.token = {};
+        this.routes = {};
+    }
+
+    /**
+     * Provision an empty, fully migrated database for this process
+     *
+     * @param {Object} [opts] Options
+     * @param {boolean} [opts.dropdb=true] Should an existing database be truncated
+     * @param {boolean} [opts.takserver=false] Should the MockTAKServer be started
+     */
+    init(opts: { dropdb?: boolean; takserver?: boolean } = {}) {
+        const dropdb = opts.dropdb !== undefined ? opts.dropdb : true;
+        const takserver = opts.takserver !== undefined ? opts.takserver : false;
+
+        test('start: database', async () => {
+            try {
+                this.connstr = await testDatabase({ reset: dropdb });
+            } catch (err) {
+                assert.ifError(err);
+            }
+
+            this.schema = JSON.parse(String(fs.readFileSync(new URL('./fixtures/get_schema.json', import.meta.url))));
+
+            for (const route of Object.keys(this.schema || {})) {
+                try {
+                    const regexp = pathToRegexp(route.split(' ').join(' /api'));
+                    this.routes[route] = new RegExp(regexp.regexp);
+                } catch (err) {
+                    assert.fail(`Could not parse ${route} as RegExp: ` + err);
+                }
+            }
+
+            if (takserver) {
+                this._tak = new MockTAKServer();
+                await this._tak.start();
+            }
+
+            process.env.ASSET_BUCKET = 'fake-asset-bucket';
+        });
+    }
+
+    get tak() {
+        if (!this._tak) throw new Error('Flight Test Runner not initialized - call flight.init({ takserver: true }) first');
+        return this._tak;
+    }
+
+    /**
+     * Make a fetch using a JSON fixture
+     *
+     * @param {String} name Name of fixture present in the ./fixtures folder (Should be JSON)
+     * @param {String} auth Name of the token that will be used to make the fetch
+     */
+    fixture(name: string, auth: string) {
+        test(`Fixture: ${name}`, async () => {
+            const req = JSON.parse(String(fs.readFileSync(new URL('./fixtures/' + name, import.meta.url))));
+            if (auth) req.auth = {
+                bearer: this.token[auth],
+            };
+
+            try {
+                await this.fetch(req.url, req, true);
+            } catch (err) {
+                assert.ifError(err);
+            }
+        });
+    }
+
+    /**
+     * Request data from the API & Ensure the output schema matches the response
+     *
+     * @param {String} url URL to fetch
+     * @param {Object} req Request Object
+     * @param {boolean|object} t If true validate schema & use defaults. If false, don't validate schema and use defaults
+     * @param {boolean} [t.verify] Verify Schema Validation
+     * @param {boolean} [t.json=true] Expect JSON in response
+     */
+    async fetch(
+        url: string | URL,
+        req: any,
+        t: boolean | { verify?: boolean; json?: boolean; binary?: boolean },
+    ): Promise<any> {
+        if (t === undefined) throw new Error('flight.fetch requires two arguments - pass (<url>, <req>, false) to disable schema testing');
+        if (!this.base) throw new Error('flight.fetch called before takeoff completed - the API port is not yet known');
+
+        const defs = {
+            verify: false,
+            json: true,
+            binary: false,
+        };
+
+        if (t === true) {
+            defs.verify = true;
+        } else if (t === false) {
+            defs.verify = false;
+        } else {
+            Object.assign(defs, t);
+        }
+
+        const parsedurl = new URL(url, this.base);
+
+        if (!req.headers) req.headers = {};
+        if (req.body && req.body.constructor === Object && !(req.body instanceof FormData)) {
+            req.headers['Content-Type'] = 'application/json';
+            req.body = JSON.stringify(req.body);
+        }
+
+        if (req.auth && req.auth.bearer) {
+            req.headers['Authorization'] = `Bearer ${req.auth.bearer}`;
+        } else if (req.auth && req.auth.username && req.auth.password) {
+            req.headers['Authorization'] = 'Basic ' + btoa(req.auth.username + ':' + req.auth.password);
+        }
+        delete req.auth;
+
+        if (!defs.verify) {
+            const _res = await fetch(parsedurl, req);
+            let body;
+            if (defs.json) body = await _res.json();
+            else if (defs.binary) body = await _res.arrayBuffer();
+            else body = await _res.text();
+
+            const res = new FlightResponse(_res, body);
+            return res;
+        }
+
+        if (!req.method) req.method = 'GET';
+
+        let match: string;
+        const spath = `${req.method.toUpperCase()} ${parsedurl.pathname}/`;
+        const matches = [];
+        for (const r of Object.keys(this.routes)) {
+            if (spath.match(this.routes[r])) {
+                matches.push(r);
+            }
+        }
+
+        if (!matches.length) {
+            assert.fail(`Cannot find schema match for: ${spath}`);
+            return;
+        } else if (matches.length === 1) {
+            match = matches[0];
+        } else {
+            // TODO multiple selection - default to first one defined in routes to mirror express behabior
+            match = matches[0];
+        }
+
+        const schemaurl = new URL('/api/schema', this.base);
+        schemaurl.searchParams.append('method', match.split(' ')[0]);
+        schemaurl.searchParams.append('url', match.split(' ')[1]);
+
+        const rawschema = await (await fetch(schemaurl)).json() as {
+            res: object;
+        };
+
+        if (!rawschema.res) throw new Error('Cannot validate resultant schema - no result schema defined');
+
+        const schema = ajv.compile(rawschema.res);
+        const _res = await fetch(parsedurl, req);
+        const res = new FlightResponse(_res, await _res.json());
+
+        if (res.ok) {
+            schema(res.body);
+
+            if (!schema.errors) return res;
+
+            for (const error of schema.errors) {
+                assert.fail(`${error.schemaPath}: ${error.message}`);
+            }
+        } else {
+            // Just print the body instead of spewing
+            // 100 schema validation errors for an error response
+            assert.fail(JSON.stringify(res.body));
+        }
+
+        return res;
+    }
+
+    /**
+     * Bootstrap a new server test instance
+     *
+     * @param {Object} custom custom config options
+     */
+    takeoff(custom = {}) {
+        test('test server takeoff', async () => {
+            if (!this.connstr) throw new Error('flight.init() must be called before flight.takeoff()');
+
+            const envArgs = {
+                postgres: this.connstr,
+                silent: true,
+                noevents: true,
+                noetlevents: true,
+                nocache: true,
+            };
+
+            // Each config owns its own database pool; only the stateful
+            // config runs migrations, so construct it first
+            this.stateful = await ConfigStateful.env(envArgs);
+            this.config = await ConfigStateless.env(envArgs, { hub: this.stateful.hub });
+
+            Object.assign(this.stateful, custom);
+            Object.assign(this.config, custom);
+
+            this.config.server = await this.config.models.Server.commit(this.config.server.id, {
+                name: 'Test Runner',
+                url: `ssl://localhost:${this.tak.ports.streaming}`,
+                auth: {
+                    cert: String(fs.readFileSync(this.tak.keys.cert)),
+                    key: String(fs.readFileSync(this.tak.keys.key)),
+                },
+                api: `https://localhost:${this.tak.ports.marti}`,
+            });
+
+            // Both configs hold their own copy of the server record - the
+            // stateful side reads TLS certs from it when opening the admin
+            // connection, so it must see the Test Runner cert too
+            this.stateful.server = this.config.server;
+
+            this.srv = await api({ stateful: this.stateful, stateless: this.config });
+
+            const address = this.srv.server.address();
+            if (!address || typeof address !== 'object') throw new Error('Could not determine API server port');
+
+            this.base = `http://localhost:${address.port}`;
+
+            // Any URLs the API generates that point back at itself must use
+            // the ephemeral port the server actually bound to
+            this.config.API_URL = this.base;
+            this.config.PMTILES_URL = this.base;
+        });
+    }
+
+    /**
+     * Generate a client keypair signed by the Mock TAK Server CA
+     *
+     * Key generation is expensive so certs are cached in /tmp and only
+     * regenerated when missing or older than the CA that must sign them
+     *
+     * @param {String} name Basename for the /tmp/cloudtak-test-<name>.* files
+     * @param {String} subject OpenSSL subject the cert should be issued for
+     * @returns {Object} paths to the key & cert
+     */
+    clientCert(name: string, subject: string): { key: string; cert: string } {
+        const key = `/tmp/cloudtak-test-${name}.key`;
+        const cert = `/tmp/cloudtak-test-${name}.cert`;
+
+        const stale = () => !fs.existsSync(key)
+            || !fs.existsSync(cert)
+            || fs.statSync(cert).mtimeMs < fs.statSync(this.tak.keys.cert).mtimeMs;
+
+        if (stale()) {
+            withFileLock('certs', () => {
+                if (!stale()) return;
+
+                CP.execSync(`
+                    openssl req \
+                        -newkey rsa:4096 \
+                        -keyout ${key} \
+                        -out /tmp/cloudtak-test-${name}.csr \
+                        -nodes \
+                        -subj "${subject}" \
+                        2> /dev/null
+                `);
+
+                CP.execSync(`
+                   openssl x509 \
+                        -req \
+                        -in /tmp/cloudtak-test-${name}.csr \
+                        -CA ${this.tak.keys.cert} \
+                        -CAkey ${this.tak.keys.key} \
+                        -out ${cert} \
+                        -set_serial 01 \
+                        -days 365 \
+                        2> /dev/null
+                `);
+            });
+        }
+
+        return { key, cert };
+    }
+
+    /**
+     * Create a new user and return an API token for that user
+     */
+    user(opts: {
+        username?: string;
+        admin?: boolean;
+    } = {}) {
+        if (opts.admin === undefined) opts.admin = true;
+
+        test('Create User', async () => {
+            const username = opts.username || (opts.admin ? 'admin' : 'user');
+
+            if (!this.config) throw new Error('TakeOff not completed');
+
+            const userControl = new UserControl(this.config);
+
+            this.clientCert(username, `/CN=${username}`);
+
+            await userControl.generate({
+                username: username + '@example.com',
+                system_admin: opts.admin,
+                auth: {
+                    key: String(fs.readFileSync(`/tmp/cloudtak-test-${username}.key`)),
+                    cert: String(fs.readFileSync(`/tmp/cloudtak-test-${username}.cert`)),
+                },
+            });
+
+            if (opts.admin) {
+                this.token[username] = jwt.sign({ access: 'admin', email: username + '@example.com' }, 'coe-wildland-fire');
+            } else {
+                this.token[username] = jwt.sign({ access: 'user', email: username + '@example.com' }, 'coe-wildland-fire');
+            }
+        });
+    }
+
+    /**
+     * Register an Integration so Layers can be created against `<prefix>-v<version>` tags
+     */
+    integration(prefix: string, opts: {
+        name?: string;
+    } = {}) {
+        test(`Create Integration ${prefix}`, async () => {
+            if (!this.config) throw new Error('TakeOff not completed');
+
+            await this.config.models.Integration.generate({
+                name: opts.name || prefix,
+                prefix,
+            });
+        });
+    }
+
+    server(username: string, password: string) {
+        test('Creating Server', async () => {
+            await this.fetch('/api/server', {
+                method: 'PATCH',
+                auth: {
+                    bearer: this.token.admin,
+                },
+                body: {
+                    name: 'Test Server',
+                    url: `ssl://localhost:${this.tak.ports.streaming}`,
+                    api: `https://localhost:${this.tak.ports.marti}`,
+                    webtak: `http://localhost:${this.tak.ports.webtak}`,
+
+                    username,
+                    password,
+
+                    auth: {
+                        cert: String(fs.readFileSync(this.tak.keys.cert)),
+                        key: String(fs.readFileSync(this.tak.keys.key)),
+                    },
+                },
+            }, true);
+
+            // Refresh config to pick up new server details
+            this.config!.server = await this.config!.models.Server.from(this.config!.server.id);
+        });
+    }
+
+    connection() {
+        test(`Creating Connection`, async () => {
+            this.clientCert('alice', '/CN=Alice');
+
+            const priorSockets = this.tak.streamingSockets.size;
+
+            const conn = await this.fetch('/api/connection', {
+                method: 'POST',
+                auth: {
+                    bearer: this.token.admin,
+                },
+                body: {
+                    name: 'Test Connection',
+                    description: 'Connection created by Flight Test Runner',
+                    auth: {
+                        key: String(fs.readFileSync('/tmp/cloudtak-test-alice.key')),
+                        cert: String(fs.readFileSync('/tmp/cloudtak-test-alice.cert')),
+                    },
+                },
+            }, true);
+
+            delete conn.body.certificate.validFrom;
+            delete conn.body.certificate.validTo;
+            delete conn.body.created;
+            delete conn.body.updated;
+
+            assert.deepEqual(conn.body, {
+                status: 'dead',
+                certificate: {
+                    subject: 'CN=Alice',
+                },
+                id: 1,
+                agency: null,
+                username: 'admin@example.com',
+                readonly: false,
+                name: 'Test Connection',
+                description: 'Connection created by Flight Test Runner',
+                enabled: true,
+            });
+
+            // The TLS connection to the Mock TAK Server is initiated by the
+            // POST above - wait until its streaming socket is visible
+            // server-side before allowing tests to proceed
+            const deadline = Date.now() + 5000;
+            while (this.tak.streamingSockets.size <= priorSockets) {
+                if (Date.now() > deadline) assert.fail('Connection did not open a streaming socket within 5s of creation');
+
+                await new Promise((resolve) => {
+                    setTimeout(resolve, 25);
+                });
+            }
+        });
+    }
+
+    /**
+     * Shutdown an existing server test instance
+     */
+    landing() {
+        test('test server landing - api', async () => {
+            try {
+                if (this._tak) {
+                    assert.equal(
+                        this._tak.unhandledMartiRequests.length, 0,
+                        `Unhandled Marti requests detected: ${this._tak.unhandledMartiRequests.join(', ')}`,
+                    );
+                }
+            } finally {
+                // Always release the servers so a failed assertion can't leave
+                // open handles that keep the process alive forever
+                if (this.srv) await this.srv.close();
+                if (this._tak) await this._tak.close();
+                await dropTestDatabase();
+            }
+        });
+    }
+}

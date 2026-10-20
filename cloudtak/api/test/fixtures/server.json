@@ -1,0 +1,9 @@
+{
+    "json": true,
+    "url": "/api/server",
+    "method": "POST",
+    "body": {
+        "name": "Default Server",
+        "url": "ssl://example.com"
+    }
+}
