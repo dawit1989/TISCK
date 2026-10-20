@@ -14,9 +14,11 @@ This audit evaluates the current implementation status and evidence quality of t
 ### Sources of Truth Inspected:
 1. **Working Tree & Git State**: Branch `main` tracking `origin/main` at commit `d4ee954` with active OpenSpec change `add-tisck-self-hosted-identity` fully applied.
 2. **OpenSpec Specifications & Baseline**:
-   - Main Specifications: `external-dependency-removal`, `garage-object-storage`, `offline-operation`, `self-hosted-deployment` in `openspec/specs/`. Strict validation passed cleanly (`openspec validate --specs --strict`).
-   - Archived Change: `openspec/changes/archive/2026-10-20-adapt-cloudtak-for-tisck-selfhosted-garage/`.
-   - Active Implemented Change: `openspec/changes/add-tisck-self-hosted-identity/` (25/25 tasks complete, strict validation passed).
+   - Main Specifications: `external-dependency-removal`, `garage-object-storage`, `offline-operation`, `self-hosted-deployment`, `self-hosted-identity`, `tak-certificate-enrollment`, `upstream-boundary-preservation`, `upstream-release-lifecycle` in `openspec/specs/`. Strict validation passed cleanly (`openspec validate --specs --strict`).
+   - Archived Changes:
+     - `openspec/changes/archive/2026-10-20-adapt-cloudtak-for-tisck-selfhosted-garage/`
+     - `openspec/changes/archive/2026-10-20-add-tisck-self-hosted-identity/`
+     - `openspec/changes/archive/2026-10-21-automated-cloudtak-upstream-maintenance/` (22/22 tasks complete, main specs synced, change archived).
 3. **Architecture Decision Records (ADRs)**: `docs/adr/0001` through `0012` and the decision log in [`docs/adr/README.md`](file:///c:/Users/Dave/Downloads/tak/TISCK/docs/adr/README.md).
 4. **Source Code & Docker Infrastructure**:
    - `cloudtak/api/` (Express API, database configuration, AWS decoupling guards, in-app OIDC Authorization Code client).
