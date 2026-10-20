@@ -1,0 +1,77 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CloudTAK Upstream Release State",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "approvedUpstream",
+    "currentlyDeployed",
+    "lastKnownGood",
+    "discoveredReleases",
+    "activeCandidate"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string"
+    },
+    "approvedUpstream": {
+      "type": "object",
+      "required": ["tag", "commitSha", "approvedAt", "sourceRepo"],
+      "properties": {
+        "tag": { "type": "string" },
+        "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "approvedAt": { "type": "string" },
+        "sourceRepo": { "type": "string" }
+      }
+    },
+    "currentlyDeployed": {
+      "type": "object",
+      "required": ["tag", "commitSha", "deployedAt"],
+      "properties": {
+        "tag": { "type": "string" },
+        "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "deployedAt": { "type": "string" }
+      }
+    },
+    "lastKnownGood": {
+      "type": "object",
+      "required": ["tag", "commitSha"],
+      "properties": {
+        "tag": { "type": "string" },
+        "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "recordedAt": { "type": "string" }
+      }
+    },
+    "discoveredReleases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tag", "commitSha", "discoveredAt"],
+        "properties": {
+          "tag": { "type": "string" },
+          "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+          "publishedAt": { "type": "string" },
+          "discoveredAt": { "type": "string" },
+          "releaseNotesUrl": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["pending_analysis", "analyzed", "candidate_testing", "pr_opened", "rejected", "approved"]
+          }
+        }
+      }
+    },
+    "activeCandidate": {
+      "type": ["object", "null"],
+      "properties": {
+        "tag": { "type": "string" },
+        "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "branch": { "type": "string" },
+        "stage": {
+          "type": "string",
+          "enum": ["analyze", "test", "prepare", "approve", "deploy"]
+        },
+        "startedAt": { "type": "string" }
+      }
+    }
+  }
+}

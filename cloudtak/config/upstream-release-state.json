@@ -1,0 +1,22 @@
+{
+  "$schema": "./upstream-release-state.schema.json",
+  "schemaVersion": "1.0.0",
+  "approvedUpstream": {
+    "tag": "v13.102.4",
+    "commitSha": "19ed703003436efc36cd3440e0b6a5358f8d3098",
+    "approvedAt": "2026-10-21T01:00:00Z",
+    "sourceRepo": "https://github.com/dfpc-coe/CloudTAK.git"
+  },
+  "currentlyDeployed": {
+    "tag": "v13.102.4",
+    "commitSha": "19ed703003436efc36cd3440e0b6a5358f8d3098",
+    "deployedAt": "2026-10-21T01:00:00Z"
+  },
+  "lastKnownGood": {
+    "tag": "v13.102.4",
+    "commitSha": "19ed703003436efc36cd3440e0b6a5358f8d3098",
+    "recordedAt": "2026-10-21T01:00:00Z"
+  },
+  "discoveredReleases": [],
+  "activeCandidate": null
+}

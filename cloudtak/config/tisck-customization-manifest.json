@@ -1,0 +1,150 @@
+{
+  "manifestVersion": "1.0.0",
+  "baselineUpstreamVersion": "v13.102.4",
+  "baselineUpstreamCommit": "19ed703003436efc36cd3440e0b6a5358f8d3098",
+  "generatedFrom": "git-diff-analysis",
+  "lastAudited": "2026-10-21T01:00:00Z",
+  "customizations": [
+    {
+      "id": "patch-config-docker-compose-guards",
+      "type": "application_patch",
+      "filePath": "cloudtak/api/common/config.ts",
+      "category": "core_configuration",
+      "originalPurpose": "Enforces 32-char signing secret in docker-compose mode, bypasses SSL for local PostGIS container networking, and sets default noetlevents=true to prevent AWS SQS crashes without AWS credentials.",
+      "currentStatus": "active_essential",
+      "evidence": "Config.envInit() guards offline startup; removal triggers unhandled rejection attempting AWS Secrets Manager calls.",
+      "overlapRisk": "high",
+      "requiredRegressionTests": [
+        "cloudtak/api/test/tisck-signing-secret.test.ts"
+      ],
+      "replaceableByConfig": false,
+      "replacementCriteria": "Requires native upstream CLI/env flags for standalone non-AWS operation and local PostgreSQL TLS disablement.",
+      "removalApproved": false
+    },
+    {
+      "id": "patch-etl-events-bypass",
+      "type": "application_patch",
+      "filePath": "cloudtak/api/common/etl-events.ts",
+      "category": "event_queue",
+      "originalPurpose": "Guards submit() message queuing with this.config.noetlevents check to avoid AWS STS / SQS calls.",
+      "currentStatus": "active_essential",
+      "evidence": "Bypasses queueUrl resolution in docker-compose offline environments.",
+      "overlapRisk": "medium",
+      "requiredRegressionTests": [
+        "cloudtak/api/test/tisck-signing-secret.test.ts"
+      ],
+      "replaceableByConfig": false,
+      "replacementCriteria": "Requires upstream to support noetlevents natively in ETLEvents.submit().",
+      "removalApproved": false
+    },
+    {
+      "id": "patch-authentik-provider-direct-token",
+      "type": "application_patch",
+      "filePath": "cloudtak/api/stateless/lib/authentik-provider.ts",
+      "category": "identity_provider",
+      "originalPurpose": "Adds support for direct AUTHENTIK_API_TOKEN environment variable without requiring AWS Secrets Manager SecretId ARN.",
+      "currentStatus": "active_essential",
+      "evidence": "Allows AuthentikProvider.init() to authenticate directly against self-hosted Authentik using static tokens.",
+      "overlapRisk": "high",
+      "requiredRegressionTests": [
+        "cloudtak/api/test/authentik-provider-direct-token.test.ts"
+      ],
+      "replaceableByConfig": false,
+      "replacementCriteria": "Requires upstream CloudTAK to natively support direct bearer tokens for Authentik integration.",
+      "removalApproved": false
+    },
+    {
+      "id": "patch-oidc-dual-homed-and-id-token",
+      "type": "application_patch",
+      "filePath": "cloudtak/api/stateless/lib/oidc.ts",
+      "category": "oidc_authentication",
+      "originalPurpose": "Implements resolveInternalUrl() for dual-homed Docker backchannel routing (identity-server:9000 vs localhost:9000), getCanonicalHostHeaders(), and validateIdToken() per RFC 7519.",
+      "currentStatus": "active_essential",
+      "evidence": "Enables CloudTAK inside Docker bridge network to communicate with Authentik while browsers access public ports; validates JWT signature, audience, issuer, exp, and nonce.",
+      "overlapRisk": "high",
+      "requiredRegressionTests": [
+        "cloudtak/api/test/oidc-url-validation.test.ts"
+      ],
+      "replaceableByConfig": false,
+      "replacementCriteria": "Requires upstream to decouple backchannel endpoint host from browser authorization URL without flat DNS requirement.",
+      "removalApproved": false
+    },
+    {
+      "id": "patch-login-dual-homed-flow",
+      "type": "application_patch",
+      "filePath": "cloudtak/api/stateless/routes/login.ts",
+      "category": "login_routes",
+      "originalPurpose": "Injects dual-homed OIDC discovery, nonce verification, Authentik tactical group mapping, advisory-locked TAK cert issuance, and public IdP logout redirects.",
+      "currentStatus": "active_essential",
+      "evidence": "Handles /api/login/oidc, /api/login/oidc/callback, and /api/login/logout in self-hosted multi-group tactical deployments.",
+      "overlapRisk": "high",
+      "requiredRegressionTests": [
+        "cloudtak/api/test/oidc-url-validation.test.ts",
+        "cloudtak/scripts/e2e-browser-login.mjs"
+      ],
+      "replaceableByConfig": false,
+      "replacementCriteria": "Requires upstream to support environment-driven OIDC bootstrapping, nonce validation, and non-AWS certificate locking.",
+      "removalApproved": false
+    },
+    {
+      "id": "patch-routes-agency-connection-ldap-direct-token",
+      "type": "application_patch",
+      "filePath": "cloudtak/api/stateless/routes/agency.ts",
+      "category": "tactical_routing",
+      "originalPurpose": "Enables AuthentikProvider direct token access in agency scoping, connection management, and LDAP outpost routes.",
+      "currentStatus": "active_essential",
+      "evidence": "Permits agency listing and channel assignment using AUTHENTIK_API_TOKEN.",
+      "overlapRisk": "medium",
+      "requiredRegressionTests": [
+        "cloudtak/api/test/authentik-live-integration.test.ts"
+      ],
+      "replaceableByConfig": false,
+      "replacementCriteria": "Requires upstream route handlers to recognize direct API tokens.",
+      "removalApproved": false
+    },
+    {
+      "id": "deployment-compose-stack",
+      "type": "deployment_configuration",
+      "filePath": "cloudtak/docker-compose.yml",
+      "category": "infrastructure",
+      "originalPurpose": "Self-hosted Compose definition orchestrating PostGIS 17, Garage S3 (v2.4.1), Authentik (2024.12.3), MediaMTX, CloudTAK API, tiles, events, and retention.",
+      "currentStatus": "active_essential",
+      "evidence": "Primary operational deployment specification for TISCK appliance.",
+      "overlapRisk": "medium",
+      "requiredRegressionTests": [
+        "cloudtak/scripts/verify-persistence.mjs"
+      ],
+      "replaceableByConfig": false,
+      "replacementCriteria": "Not replaceable - owned by TISCK deployment layer.",
+      "removalApproved": false
+    },
+    {
+      "id": "scripts-operations-suite",
+      "type": "integration_scripts",
+      "filePath": "cloudtak/scripts/sync-upstream.sh",
+      "category": "operations",
+      "originalPurpose": "Vendor branch management, 3-way merge execution, Authentik group bootstrapping, Garage S3 bucket provisioning, and identity secret generation.",
+      "currentStatus": "active_essential",
+      "evidence": "Powers zero-touch provisioning and upstream synchronization.",
+      "overlapRisk": "low",
+      "requiredRegressionTests": [],
+      "replaceableByConfig": false,
+      "replacementCriteria": "Not replaceable - owned by TISCK operations layer.",
+      "removalApproved": false
+    },
+    {
+      "id": "tests-tisck-harness",
+      "type": "test_harness",
+      "filePath": "cloudtak/api/test/oidc-url-validation.test.ts",
+      "category": "verification",
+      "originalPurpose": "Non-destructive regression verification for OIDC URLs, ID tokens, tactical groups, signing secret enforcement, browser login, and persistent volume recovery.",
+      "currentStatus": "active_essential",
+      "evidence": "Validates runtime invariants without mutating production database or storage.",
+      "overlapRisk": "low",
+      "requiredRegressionTests": [],
+      "replaceableByConfig": false,
+      "replacementCriteria": "Not replaceable - owned by TISCK verification layer.",
+      "removalApproved": false
+    }
+  ]
+}
