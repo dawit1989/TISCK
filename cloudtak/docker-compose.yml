@@ -343,13 +343,16 @@ services:
     depends_on:
       identity-server:
         condition: service_healthy
+    env_file:
+      - path: .env.identity
+        required: false
     environment:
       - AUTHENTIK_HOST=http://identity-server:9000
       - AUTHENTIK_TOKEN=${AUTHENTIK_BOOTSTRAP_TOKEN:-}
       - AUTHENTIK_INSECURE=true
     ports:
-      - "127.0.0.1:${AUTHENTIK_LDAP__PORT:-389}:389"
-      - "127.0.0.1:${AUTHENTIK_LDAPS__PORT:-636}:636"
+      - "127.0.0.1:${AUTHENTIK_LDAP_PORT:-389}:389"
+      - "127.0.0.1:${AUTHENTIK_LDAPS_PORT:-636}:636"
     networks:
       - cloudtak-net
 

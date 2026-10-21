@@ -136,6 +136,24 @@ docker compose up -d
 - **PMTiles Tile Server**: `http://<HOST_IP>:5002`
 - **Video Streams**: `rtsp://<HOST_IP>:8554/<stream_name>` or `http://<HOST_IP>:8889/<stream_name>`
 
+### 6. Official TAK Server Deployment (tak-infra)
+
+To run the decoupled official TAK Server (v5.7 / v5.6) alongside TISCK with independent database isolation and automated client auto-enrollment:
+
+```bash
+cd tak-infra
+cp .env.example .env
+docker compose up -d
+```
+
+- **CoT TLS Port**: `8089` (ATAK / WinTAK streaming)
+- **Web Admin**: `https://localhost:8443`
+- **Certificate Auto-Enrollment**: `https://localhost:8446`
+- **Instant ATAK Pairing QR Code**:
+  ```bash
+  npx tsx bin/show-qr.ts
+  ```
+
 ---
 
 ## Identity Operations & Hardening
@@ -188,6 +206,7 @@ The workspace includes an automated audit skill located at [`.agents/skills/tisc
 Baseline behavior contracts are cataloged in [`openspec/specs/`](openspec/specs/):
 - [`external-dependency-removal`](openspec/specs/external-dependency-removal/spec.md): Elimination of AWS SecretsManager, STS, SQS, and excluded infrastructure repos.
 - [`garage-object-storage`](openspec/specs/garage-object-storage/spec.md): Garage S3 CRUD, byte-range requests, path-style addressing, and persistence.
+- [`official-tak-server`](openspec/specs/official-tak-server/spec.md): Self-hosted official TAK Server, independent PostGIS database isolation, Authentik LDAP channel mapping, and offline TLS operation.
 - [`offline-operation`](openspec/specs/offline-operation/spec.md): Air-gapped basemaps, offline UI asset bundling, and Horn of Africa coverage.
 - [`self-hosted-deployment`](openspec/specs/self-hosted-deployment/spec.md): Compose orchestration, health checks, and dual network interface isolation.
 - [`self-hosted-identity`](openspec/specs/self-hosted-identity/spec.md): Authentik server, worker, cache orchestration, tactical groups, TOTP MFA, and fail-closed security.

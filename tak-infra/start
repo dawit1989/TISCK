@@ -1,0 +1,197 @@
+#!/bin/bash
+# ==============================================================================
+# TAK Server - Self-Hosted Offline Startup & Lifecycle Entrypoint
+# ==============================================================================
+
+if [ -f "${NVM_DIR:-/usr/local/nvm}/nvm.sh" ]; then
+    . "${NVM_DIR:-/usr/local/nvm}/nvm.sh"
+fi
+
+set -euo pipefail
+
+echo "ok - TAK Server - Self-Hosted Task starting..."
+echo "ok - NodeJS - Version: $(node --version 2>/dev/null || echo 'not installed')"
+
+if [ -d "/opt/tak-conf" ]; then
+    echo "ok - TAK Server - Applying conf overlay to /opt/tak"
+    cp -a /opt/tak-conf/. /opt/tak/
+fi
+
+# Ensure TAK certs directory is present
+mkdir -p /opt/tak/certs/files
+mkdir -p "/opt/tak/certs/files/${HostedDomain:-localhost}"
+
+# 1. Restore/Pull from Garage S3 if enabled
+if [ "${S3_ENABLED:-true}" = "true" ] && [ -n "${AWS_S3_Endpoint:-}" ]; then
+    echo "ok - S3 - Checking for remote configs and certificates in S3..."
+    if [ -f "/opt/tak/src/s3-sync.ts" ]; then
+        npx tsx /opt/tak/src/s3-sync.ts pull || echo "warn - S3 pull skipped or failed, falling back to local files"
+    fi
+fi
+
+# 2. Local Certificate Management (Root CA, Intermediate CA, Server Cert, Truststores)
+cd /opt/tak/certs
+
+export COUNTRY="${COUNTRY:-US}"
+export STATE="${STATE:-VA}"
+export CITY="${CITY:-Quantico}"
+export ORGANIZATION="${ORGANIZATION:-TISCK}"
+export ORGANIZATIONAL_UNIT="${ORGANIZATIONAL_UNIT:-Tactical Operations}"
+export CAPASS="${CAPASS:-atakatak}"
+export PASS="${PASS:-atakatak}"
+
+if [ ! -f "/opt/tak/certs/files/ca.pem" ]; then
+    echo "ok - Root CA - Does not exist - Generating New Root CA"
+    /opt/tak/certs/cert-metadata.sh
+    /opt/tak/certs/makeRootCa.sh --ca-name "${StackName:-TAKServer}"
+else
+    echo "ok - Root CA - Exists on disk"
+fi
+
+if [ ! -f "/opt/tak/certs/files/truststore-root.jks" ] && [ -f "/opt/tak/certs/files/ca.pem" ]; then
+    echo "ok - TAK Server - Generating Truststore Root from CA"
+    keytool -import -trustcacerts -file /opt/tak/certs/files/ca.pem -alias root -keystore /opt/tak/certs/files/truststore-root.jks -storepass atakatak -noprompt
+fi
+
+if [ ! -f "/opt/tak/certs/files/intermediate-ca-signing.jks" ]; then
+    echo "ok - Intermediate CA - Does not exist - Generating Intermediate CA Certificate"
+    { yes || :; } | /opt/tak/certs/makeCert.sh ca intermediate-ca
+else
+    echo "ok - Intermediate CA - Exists on disk"
+fi
+
+if [ ! -f "/opt/tak/certs/files/takserver.jks" ]; then
+    echo "ok - Server Cert - Does not exist - Generating TAK Server Certificate"
+    { yes || :; } | /opt/tak/certs/makeCert.sh server takserver
+else
+    echo "ok - Server Cert - Exists on disk"
+fi
+
+if [ ! -f "/opt/tak/certs/files/admin.p12" ]; then
+    echo "ok - Admin Cert - Does not exist - Generating Admin Client Certificate"
+    { yes || :; } | /opt/tak/certs/makeCert.sh client admin
+else
+    echo "ok - Admin Cert - Exists on disk"
+fi
+
+# 3. TLS Certificate Handling for HTTPS Connector
+DOMAIN="${HostedDomain:-localhost}"
+mkdir -p "/opt/tak/certs/files/${DOMAIN}"
+
+if [ "${ENABLE_LETSENCRYPT:-false}" = "true" ]; then
+    echo "ok - LetsEncrypt - Enabled, checking for certificates"
+    if [ ! -f "/opt/tak/certs/files/${DOMAIN}/letsencrypt.jks" ]; then
+        if [ -d "/etc/letsencrypt/live/${DOMAIN}" ]; then
+            echo "ok - TAK Server - Converting existing LetsEncrypt certs to TAK format"
+            openssl pkcs12 -export \
+                -in "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" \
+                -inkey "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" \
+                -out "/opt/tak/certs/files/${DOMAIN}/letsencrypt.p12" \
+                -name "${DOMAIN}" \
+                -password "pass:atakatak"
+
+            keytool -importkeystore \
+                -srcstorepass "atakatak" \
+                -deststorepass "atakatak" \
+                -destkeystore "/opt/tak/certs/files/${DOMAIN}/letsencrypt.jks" \
+                -srckeystore "/opt/tak/certs/files/${DOMAIN}/letsencrypt.p12" \
+                -srcstoretype "pkcs12"
+        else
+            echo "ok - TAK Server - Using self-signed server cert temporarily"
+            cp /opt/tak/certs/files/takserver.jks "/opt/tak/certs/files/${DOMAIN}/letsencrypt.jks" || true
+        fi
+    fi
+    /opt/tak/letsencrypt-request-cert.sh &
+else
+    echo "ok - LetsEncrypt - Disabled, using internal TAK CA certificates for HTTPS"
+    cp /opt/tak/certs/files/takserver.jks "/opt/tak/certs/files/${DOMAIN}/letsencrypt.jks" || true
+fi
+
+# 4. Assemble Database Connection URL if not provided
+if [ -z "${PostgresURL:-}" ]; then
+    POSTGRES_HOST="${POSTGRES_HOST:-tak-db}"
+    POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+    POSTGRES_DB="${POSTGRES_DB:-takserver}"
+    export PostgresURL="postgresql://${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+fi
+export PostgresUsername="${PostgresUsername:-${POSTGRES_USER:-tak}}"
+export PostgresPassword="${PostgresPassword:-${POSTGRES_PASSWORD:-atakatak}}"
+
+# 5. LDAP Connectivity Check (if enabled)
+if [ "${LDAP_ENABLED:-false}" = "true" ] && [ -n "${LDAP_SECURE_URL:-}" ]; then
+    echo "ok - LDAP - Testing Connection to ${LDAP_SECURE_URL}"
+    LDAP_HOST_PARSED=$(echo "${LDAP_SECURE_URL}" | sed -e 's|^[^/]*//||' -e 's|:.*$||')
+    LDAP_PORT_PARSED=$(echo "${LDAP_SECURE_URL}" | sed -e 's|^.*:||')
+    if [ "$LDAP_PORT_PARSED" = "$LDAP_HOST_PARSED" ]; then
+        LDAP_PORT_PARSED=389
+    fi
+
+    if timeout 5 bash -c "</dev/tcp/${LDAP_HOST_PARSED}/${LDAP_PORT_PARSED}" 2>/dev/null; then
+        echo "ok - LDAP - TCP Connection Successful to ${LDAP_HOST_PARSED}:${LDAP_PORT_PARSED}"
+    else
+        echo "warn - LDAP - TCP Connection Failed to ${LDAP_HOST_PARSED}:${LDAP_PORT_PARSED}, proceeding anyway"
+    fi
+fi
+
+# 6. Generate CoreConfig.xml
+echo "ok - TAK Server - Generating CoreConfig.xml"
+cd /opt/tak
+npx tsx CoreConfig.ts
+
+if [ -f "/opt/tak/validateConfig.sh" ]; then
+    /opt/tak/validateConfig.sh /opt/tak/CoreConfig.xml || echo "warn - CoreConfig validation warning"
+fi
+
+# 7. Database Migration & Schema Upgrade
+echo "ok - TAK Server - Executing database migrations..."
+if [ -f "/opt/tak/db-utils/SchemaManager.jar" ]; then
+    java -jar /opt/tak/db-utils/SchemaManager.jar validate || true
+    java -jar /opt/tak/db-utils/SchemaManager.jar upgrade || true
+fi
+
+# 8. Start TAK Server Daemon
+echo "ok - TAK Server - Launching TAK Server process"
+if [ -f "/opt/tak/configureInDocker.sh" ]; then
+    /opt/tak/configureInDocker.sh init &
+elif [ -f "/opt/tak/bin/takserver.sh" ]; then
+    /opt/tak/bin/takserver.sh start &
+fi
+
+# 9. Elevate Admin User Privileges
+echo "ok - TAK Server - Elevating admin user privileges"
+if [ -f "/opt/tak/utils/UserManager.jar" ] && [ -f "/opt/tak/certs/files/admin.pem" ]; then
+    SetAdminCommand="java -jar /opt/tak/utils/UserManager.jar certmod -A /opt/tak/certs/files/admin.pem"
+    RETRIES=15
+    while [ $RETRIES -gt 0 ]; do
+        if $SetAdminCommand 2>/dev/null; then
+            echo "ok - TAK Server - Elevating admin user privileges succeeded"
+            break
+        fi
+        echo "TAK Server still initializing, retrying admin elevation in 5 seconds..."
+        sleep 5
+        RETRIES=$((RETRIES - 1))
+    done
+fi
+
+# 10. Generate Enrollment Package & Push to Garage S3
+if [ -f "/opt/tak/bin/generate-enrollment.ts" ]; then
+    echo "ok - Enrollment - Generating ATAK client enrollment package and QR code"
+    npx tsx /opt/tak/bin/generate-enrollment.ts || echo "warn - Enrollment generation warning"
+fi
+
+if [ "${S3_ENABLED:-true}" = "true" ] && [ -f "/opt/tak/src/s3-sync.ts" ]; then
+    echo "ok - S3 - Pushing initial certificates and configurations to Garage S3"
+    npx tsx /opt/tak/src/s3-sync.ts push || echo "warn - S3 push warning"
+fi
+
+echo "ok - TAK Server - Ready and accepting connections"
+
+# 11. Process Monitoring
+if [ "${ENABLE_LETSENCRYPT:-false}" = "true" ]; then
+    exec /usr/sbin/cron -f
+else
+    # Keep container running by monitoring takserver logs or tailing
+    mkdir -p /opt/tak/logs
+    touch /opt/tak/logs/takserver.log
+    exec tail -f /opt/tak/logs/takserver.log
+fi

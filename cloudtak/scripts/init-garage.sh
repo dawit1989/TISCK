@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONTAINER_NAME="${GARAGE_CONTAINER:-cloudtak-store-1}"
 ASSET_BUCKET="${ASSET_BUCKET:-cloudtak}"
+TAK_BUCKET="${TAK_BUCKET:-tak-server}"
 
 # Resolve container name if using standard compose naming
 if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
@@ -46,7 +47,7 @@ else
   echo "Created Key ID: $KEY_ID"
 fi
 
-# 3. Create required ASSET_BUCKET
+# 3. Create required ASSET_BUCKET and TAK_BUCKET
 EXISTING_BUCKETS=$(docker exec "${CONTAINER_NAME}" /garage bucket list 2>&1)
 if echo "$EXISTING_BUCKETS" | grep -q "$ASSET_BUCKET"; then
   echo "Bucket '$ASSET_BUCKET' already exists."
@@ -55,6 +56,15 @@ else
   docker exec "${CONTAINER_NAME}" /garage bucket create "$ASSET_BUCKET" > /dev/null 2>&1 || true
   docker exec "${CONTAINER_NAME}" /garage bucket allow "$ASSET_BUCKET" --key "$KEY_NAME" --read --write > /dev/null 2>&1 || true
   echo "Bucket '$ASSET_BUCKET' created and permitted for '$KEY_NAME'."
+fi
+
+if echo "$EXISTING_BUCKETS" | grep -q "$TAK_BUCKET"; then
+  echo "Bucket '$TAK_BUCKET' already exists."
+else
+  echo "Creating bucket '$TAK_BUCKET'..."
+  docker exec "${CONTAINER_NAME}" /garage bucket create "$TAK_BUCKET" > /dev/null 2>&1 || true
+  docker exec "${CONTAINER_NAME}" /garage bucket allow "$TAK_BUCKET" --key "$KEY_NAME" --read --write > /dev/null 2>&1 || true
+  echo "Bucket '$TAK_BUCKET' created and permitted for '$KEY_NAME'."
 fi
 
 echo "Garage initialization complete."

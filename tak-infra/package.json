@@ -1,0 +1,53 @@
+{
+    "name": "@tak-ps/tak-infra",
+    "type": "module",
+    "private": true,
+    "version": "2.2.0",
+    "description": "CloudFormation managed infrastructure for TAK Server",
+    "scripts": {
+        "lint": "eslint CoreConfig.ts cloudformation/ src/",
+        "build": "node ./bin/build.js",
+        "check": "tsc --noEmit",
+        "test": "c8 --reporter=lcov --reporter html tsx --test test/*.ts"
+    },
+    "engines": {
+        "node": ">= 22"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/dfpc-coe/tak-infra.git"
+    },
+    "author": "Nick Ingalls <nick@ingalls.ca>",
+    "license": "ISC",
+    "bugs": {
+        "url": "https://github.com/dfpc-coe/tak-infra/issues"
+    },
+    "homepage": "https://github.com/dfpc-coe/tak-infra#readme",
+    "dependencies": {
+        "@aws-sdk/client-acm": "^3.782.0",
+        "@aws-sdk/client-s3": "^3.895.0",
+        "@openaddresses/cloudfriend": "^7.0.0",
+        "@sinclair/typebox": "^0.34.33",
+        "jks-js": "^1.1.4",
+        "json-diff-ts": "^4.2.3",
+        "jszip": "^3.10.2",
+        "qrcode": "^1.5.4",
+        "qrcode-terminal": "^0.12.0",
+        "typescript": "^6.0.0",
+        "typescript-eslint": "^8.31.0",
+        "xml-js": "^1.6.11"
+    },
+    "devDependencies": {
+        "@eslint/js": "^10.0.1",
+        "@openaddresses/batch-alarms": "^5.0.4",
+        "@openaddresses/deploy": "^10.0.0",
+        "@types/node": "^26.0.0",
+        "@types/qrcode": "^1.5.6",
+        "@types/qrcode-terminal": "^0.12.2",
+        "@types/sinon": "^21.0.0",
+        "c8": "^11.0.0",
+        "eslint": "^10.0.0",
+        "sinon": "^22.0.0",
+        "tsx": "^4.20.6"
+    }
+}

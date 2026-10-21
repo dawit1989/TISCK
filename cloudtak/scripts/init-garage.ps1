@@ -5,6 +5,7 @@ if (Test-Path variable:global:PSNativeCommandUseErrorActionPreference) {
 
 $ContainerName = if ($env:GARAGE_CONTAINER) { $env:GARAGE_CONTAINER } else { "cloudtak-store-1" }
 $AssetBucket = if ($env:ASSET_BUCKET) { $env:ASSET_BUCKET } else { "cloudtak" }
+$TakBucket = if ($env:TAK_BUCKET) { $env:TAK_BUCKET } else { "tak-server" }
 
 # Find running store container if standard name not found
 $Running = docker ps --format '{{.Names}}'
@@ -52,6 +53,15 @@ if ($Buckets -match $AssetBucket) {
     docker exec $ContainerName /garage bucket create $AssetBucket
     docker exec $ContainerName /garage bucket allow $AssetBucket --key $KeyName --read --write
     Write-Host "Bucket '$AssetBucket' created and allowed for '$KeyName'."
+}
+
+if ($Buckets -match $TakBucket) {
+    Write-Host "Bucket '$TakBucket' already exists."
+} else {
+    Write-Host "Creating bucket '$TakBucket'..."
+    docker exec $ContainerName /garage bucket create $TakBucket
+    docker exec $ContainerName /garage bucket allow $TakBucket --key $KeyName --read --write
+    Write-Host "Bucket '$TakBucket' created and allowed for '$KeyName'."
 }
 
 Write-Host "Garage initialization complete."
